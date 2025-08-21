@@ -131,7 +131,8 @@ class PortfolioSimulator:
         """
         total_value = self.sol_balance
         
-        for position in self.positions.values():
+        # Create snapshot to avoid "dictionary changed size during iteration"
+        for position in list(self.positions.values()):
             token_value = await self.valuer.get_token_value_sol(
                 position.mint, 
                 position.amount, 

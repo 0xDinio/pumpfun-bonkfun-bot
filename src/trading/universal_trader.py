@@ -1086,45 +1086,90 @@ class UniversalTrader:
                         f"Position PnL: {pnl['price_change_pct']:.2f}% ({pnl['unrealized_pnl_sol']:.6f} SOL)"
                     )
 
-                    # Execute sell
-                    sell_result = await self.seller.execute(token_info)
-
-                    if sell_result.success:
-                        # Close position with actual exit price
-                        position.close_position(sell_result.price, exit_reason)
-
-                        logger.info(
-                            f"Successfully exited position: {exit_reason.value}"
-                        )
-                        self._log_trade(
-                            "sell",
-                            token_info,
-                            sell_result.price,
-                            sell_result.amount,
-                            sell_result.tx_signature,
-                        )
-
-                        # Log final PnL
-                        final_pnl = position.get_pnl()
-                        logger.info(
-                            f"Final PnL: {final_pnl['price_change_pct']:.2f}% ({final_pnl['unrealized_pnl_sol']:.6f} SOL)"
-                        )
-
-                        # Close ATA if enabled
-                        await handle_cleanup_after_sell(
-                            self.solana_client,
-                            self.wallet,
-                            token_info.mint,
-                            self.priority_fee_manager,
-                            self.cleanup_mode,
-                            self.cleanup_with_priority_fee,
-                            self.cleanup_force_close_with_burn,
-                        )
+                    # Execute sell based on dry-run vs live mode
+                    if self.dry_run_flag and self.portfolio_simulator:
+                        # DRY RUN: Simulate the sell instead of executing it
+                        logger.info(f"WOULD_SELL {token_info.symbol} (position exit)")
+                        
+                        # Get real token price using same logic as buy
+                        try:
+                            real_price = await self._get_token_price_for_simulation(token_info)
+                            if real_price is None or real_price <= 0:
+                                logger.warning(f"DRY_RUN: Unable to get quote for {token_info.symbol}, skipping exit")
+                                break  # Exit monitoring loop since we can't get price
+                            
+                            # Estimate transaction fees (simplified model)
+                            estimated_fee = 0.005
+                            
+                            # Simulate the sell (100% of position)
+                            sim_result = await self.portfolio_simulator.simulate_sell(
+                                mint=token_info.mint,
+                                symbol=token_info.symbol,
+                                price_per_token=real_price,
+                                sell_percentage=1.0,  # Exit full position
+                                fee_sol=estimated_fee
+                            )
+                            
+                            if sim_result and sim_result.get("success"):
+                                # Close position with simulated exit price
+                                position.close_position(real_price, exit_reason)
+                                
+                                logger.info(f"Successfully simulated exit: {exit_reason.value}")
+                                
+                                # Log post-exit debug info
+                                if self.debug_valuation_flag:
+                                    post_value = await self.portfolio_simulator.get_portfolio_value()
+                                    logger.info(f"[DEBUG] post-exit-dry: sol={self.portfolio_simulator.sol_balance:.6f} value={post_value:.6f} realized_pnl={self.portfolio_simulator.realized_pnl:.6f}")
+                                
+                                break  # Exit monitoring loop
+                            else:
+                                logger.error(f"DRY_RUN: Failed to simulate sell for {token_info.symbol}: {sim_result.get('error', 'Unknown error')}")
+                                # Keep monitoring in case we can retry
+                                
+                        except Exception as e:
+                            logger.exception(f"DRY_RUN: Error simulating sell for {token_info.symbol}: {e}")
+                            # Keep monitoring in case error is transient
                     else:
-                        logger.error(
-                            f"Failed to exit position: {sell_result.error_message}"
-                        )
-                        # Keep monitoring in case sell can be retried
+                        # LIVE MODE: Execute actual sell
+                        sell_result = await self.seller.execute(token_info)
+
+                        if sell_result.success:
+                            # Close position with actual exit price
+                            position.close_position(sell_result.price, exit_reason)
+
+                            logger.info(
+                                f"Successfully exited position: {exit_reason.value}"
+                            )
+                            self._log_trade(
+                                "sell",
+                                token_info,
+                                sell_result.price,
+                                sell_result.amount,
+                                sell_result.tx_signature,
+                            )
+
+                            # Log final PnL
+                            final_pnl = position.get_pnl()
+                            logger.info(
+                                f"Final PnL: {final_pnl['price_change_pct']:.2f}% ({final_pnl['unrealized_pnl_sol']:.6f} SOL)"
+                            )
+
+                            # Close ATA if enabled
+                            await handle_cleanup_after_sell(
+                                self.solana_client,
+                                self.wallet,
+                                token_info.mint,
+                                self.priority_fee_manager,
+                                self.cleanup_mode,
+                                self.cleanup_with_priority_fee,
+                                self.cleanup_force_close_with_burn,
+                            )
+                            break  # Exit monitoring loop
+                        else:
+                            logger.error(
+                                f"Failed to exit position: {sell_result.error_message}"
+                            )
+                            # Keep monitoring in case sell can be retried
 
                     break
                 else:
