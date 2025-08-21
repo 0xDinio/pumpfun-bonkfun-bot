@@ -110,7 +110,7 @@ def decode_create_instruction(ix_data: bytes, keys, accounts) -> dict:
 
 def print_token_info(info, signature):
     """Print formatted token information."""
-    print("\n🎯 New Pump.fun token detected!")
+    print("\nNew Pump.fun token detected!")
     print(f"Name: {info['name']} | Symbol: {info['symbol']}")
     print(f"Mint: {info['mint']}")
     print(f"Bonding curve: {info['bonding_curve']}")

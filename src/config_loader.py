@@ -131,6 +131,26 @@ def resolve_env_vars(config: dict) -> None:
                 d[k] = resolve_env(v)
 
     resolve_all(config)
+    
+    # Add dry-run and safety environment variables
+    dry_run_env = {
+        "DRY_RUN": os.getenv("DRY_RUN", "true").lower() == "true",
+        "DRY_RUN_STARTING_SOL": float(os.getenv("DRY_RUN_STARTING_SOL", "3.0")),
+        "DRY_RUN_VALUE_MODE": os.getenv("DRY_RUN_VALUE_MODE", "quote"),  # Changed default to "quote"
+        "DRY_RUN_DURATION_SECONDS": int(os.getenv("DRY_RUN_DURATION_SECONDS", "300")),
+        "HALT": int(os.getenv("HALT", "0")) == 1,
+        "DEBUG_VALUATION": os.getenv("DEBUG_VALUATION", "false").lower() == "true",
+    }
+    
+    # Add console verbosity environment variables (safe defaults OFF)
+    verbose_env = {
+        "VERBOSE_CONSOLE": os.getenv("VERBOSE_CONSOLE", "false").lower() == "true",
+        "VERBOSE_TRADE_LINES": os.getenv("VERBOSE_TRADE_LINES", "true").lower() == "true",
+        "VERBOSE_PORTFOLIO_INTERVAL_SECONDS": int(os.getenv("VERBOSE_PORTFOLIO_INTERVAL_SECONDS", "30")),
+        "VERBOSE_INCLUDE_POSITIONS": os.getenv("VERBOSE_INCLUDE_POSITIONS", "false").lower() == "true",
+    }
+    config.update(dry_run_env)
+    config.update(verbose_env)
 
 
 def get_nested_value(config: dict, path: str) -> Any:

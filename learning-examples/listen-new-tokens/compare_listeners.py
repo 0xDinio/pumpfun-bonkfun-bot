@@ -184,7 +184,7 @@ class DetectionTracker:
             row = f"{provider1:>{col_width}} |"
             for provider2 in providers_list:
                 if provider1 == provider2:
-                    row += f" {'—':>{col_width}} |"
+                    row += f" {'-':>{col_width}} |"
                     continue
 
                 # Calculate average latency

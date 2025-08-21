@@ -1,0 +1,11 @@
+---
+alwaysApply: true
+---
+
+# Communication Discipline Rule
+
+1. Always output the 6 deliverables (files, plan, diffs, run commands, verification, rollback).
+2. Always confirm whether env variables match `.env` exactly.
+3. For new features, include sanity checks (expected log lines, expected file outputs).
+4. Always use the smallest change possible (no refactors unless requested).
+5. Never introduce Node.js, keep everything Python.

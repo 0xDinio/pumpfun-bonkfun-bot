@@ -250,7 +250,7 @@ class DetectionTracker:
             row = f"{provider1[:8]:>8} |"
             for provider2 in providers_list:
                 if provider1 == provider2:
-                    row += "      — |"
+                    row += "      - |"
                     continue
 
                 # Calculate average latency

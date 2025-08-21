@@ -38,17 +38,18 @@ class PumpFunCurveManager(CurveManager):
         """Get the platform this manager serves."""
         return Platform.PUMP_FUN
 
-    async def get_pool_state(self, pool_address: Pubkey) -> dict[str, Any]:
+    async def get_pool_state(self, pool_address: Pubkey, commitment: str = "confirmed") -> dict[str, Any]:
         """Get the current state of a pump.fun bonding curve.
 
         Args:
             pool_address: Address of the bonding curve
+            commitment: Commitment level for account data fetch
 
         Returns:
             Dictionary containing bonding curve state data
         """
         try:
-            account = await self.client.get_account_info(pool_address)
+            account = await self.client.get_account_info(pool_address, commitment=commitment)
             if not account.data:
                 raise ValueError(f"No data in bonding curve account {pool_address}")
 
@@ -61,16 +62,17 @@ class PumpFunCurveManager(CurveManager):
             logger.exception("Failed to get curve state")
             raise ValueError(f"Invalid bonding curve state: {e!s}")
 
-    async def calculate_price(self, pool_address: Pubkey) -> float:
+    async def calculate_price(self, pool_address: Pubkey, commitment: str = "confirmed") -> float:
         """Calculate current token price from bonding curve state.
 
         Args:
             pool_address: Address of the bonding curve
+            commitment: Commitment level for account data fetch
 
         Returns:
             Current token price in SOL
         """
-        pool_state = await self.get_pool_state(pool_address)
+        pool_state = await self.get_pool_state(pool_address, commitment=commitment)
 
         # Use virtual reserves for price calculation
         virtual_token_reserves = pool_state["virtual_token_reserves"]

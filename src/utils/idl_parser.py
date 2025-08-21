@@ -86,7 +86,7 @@ class IDLParser:
             instruction_name = self.instructions[discriminator]["name"]
             if self.verbose:
                 print(
-                    f"⚠️  Instruction data for '{instruction_name}' is shorter than the expected minimum "
+                    f"WARNING: Instruction data for '{instruction_name}' is shorter than the expected minimum "
                     f"({actual_size}/{expected_min_size} bytes)."
                 )
             return False
@@ -121,7 +121,7 @@ class IDLParser:
                 args[arg["name"]] = value
             except Exception as e:
                 if self.verbose:
-                    print(f"❌ Decode error in argument '{arg['name']}': {e}")
+                    print(f"Decode error in argument '{arg['name']}': {e}")
                 return None
 
         # Helper to safely retrieve account public keys
@@ -248,7 +248,7 @@ class IDLParser:
 
         except Exception as e:
             if self.verbose:
-                print(f"❌ Error decoding event {event_name_actual}: {e}")
+                print(f"Error decoding event {event_name_actual}: {e}")
             return None
 
     def find_event_in_logs(
@@ -349,7 +349,7 @@ class IDLParser:
             self.events[discriminator] = event
             if self.verbose:
                 print(
-                    f"📅 Loaded event: {event['name']} with discriminator {discriminator.hex()}"
+                    f"Loaded event: {event['name']} with discriminator {discriminator.hex()}"
                 )
 
     def _build_type_map(self):
@@ -366,10 +366,10 @@ class IDLParser:
                     min_size += self._calculate_type_min_size(arg["type"])
                 self.instruction_min_sizes[discriminator] = min_size
                 if self.verbose and instruction["name"] == "initialize":
-                    print(f"📏 Initialize instruction min size: {min_size} bytes")
+                    print(f"Initialize instruction min size: {min_size} bytes")
             except Exception as e:
                 if self.verbose:
-                    print(f"⚠️  Could not calculate size for {instruction['name']}: {e}")
+                    print(f"WARNING: Could not calculate size for {instruction['name']}: {e}")
                 self.instruction_min_sizes[discriminator] = DISCRIMINATOR_SIZE
 
     def _calculate_type_min_size(self, type_def: str | dict) -> int:

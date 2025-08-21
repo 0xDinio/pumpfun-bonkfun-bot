@@ -1,0 +1,22 @@
+---
+alwaysApply: true
+---
+
+# Environment Variables (Canonical)
+
+Use these exact names (do not invent alternatives):
+- SOLANA_NODE_RPC_ENDPOINT  (HTTP)
+- SOLANA_NODE_WSS_ENDPOINT  (WS)
+- GEYSER_ENDPOINT           (optional)
+- GEYSER_API_TOKEN          (optional)
+- GEYSER_AUTH_TYPE          (optional)
+- SOLANA_PRIVATE_KEY        (Base58 string; only needed for live)
+
+Dry-run & control flags we add:
+- DRY_RUN                   (bool, default true in examples)
+- DRY_RUN_STARTING_SOL      (float, e.g., 3.0)
+- DRY_RUN_VALUE_MODE        (entry|quote|rpc; default entry)
+- HALT                      (0/1)
+
+Notes:
+- Always quote URL values in `.env` (e.g., `"...?api-key=XXXX"`).

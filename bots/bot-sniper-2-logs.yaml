@@ -23,22 +23,22 @@ geyser:
 # Trading parameters
 # Control trade execution: amount of SOL per trade and acceptable price deviation
 trade:
-  buy_amount: 0.0001 # Amount of SOL to spend when buying (in SOL)
+  buy_amount: 0.1 # Amount of SOL to spend when buying (in SOL)
   buy_slippage: 0.2 # Maximum acceptable price deviation (0.2 = 20%)
   sell_slippage: 0.3
 
   # Exit strategy configuration
   exit_strategy: "time_based" # Options: "time_based", "tp_sl", "manual"
-  take_profit_percentage: 0.4 # Take profit at 40% gain (0.4 = 40%)
-  stop_loss_percentage: 0.4 # Stop loss at 40% loss (0.4 = 40%)
-  max_hold_time: 60 # Maximum hold time in seconds
+  take_profit_percentage: 0.1 # Take profit at 40% gain (0.4 = 40%)
+  stop_loss_percentage: 0.1 # Stop loss at 40% loss (0.4 = 40%)
+  max_hold_time: 10 # Maximum hold time in seconds
   price_check_interval: 2 # Check price every 2 seconds
 
   # EXTREME FAST mode configuration
   # When enabled, skips waiting for the bonding curve to stabilize and RPC price check.
   # The bot buys the specified number of tokens directly, making the process faster but less precise.
   extreme_fast_mode: true
-  extreme_fast_token_amount: 20 # Amount of tokens to buy
+  extreme_fast_token_amount: 2000 # Amount of tokens to buy
 
 # Priority fee configuration
 # Manage transaction speed and cost on the Solana network.
@@ -55,16 +55,16 @@ filters:
   match_string: null # Only process tokens with this string in name/symbol
   bro_address: null # Only trade tokens created by this user address
   listener_type: "logs" # Method for detecting new tokens: "logs", "blocks", or "geyser"
-  max_token_age: 0.001 # Maximum token age in seconds for processing
+  max_token_age: 1 # Maximum token age in seconds for processing
   marry_mode: false # Only buy tokens, skip selling
   yolo_mode: false # Continuously trade tokens
 
 # Retry and timeout settings
 retries:
   max_attempts: 1 # Number of attempts for transaction submission
-  wait_after_creation: 15 # Seconds to wait after token creation (only if EXTREME FAST is disabled)
-  wait_after_buy: 15 # Holding period after buy transaction
-  wait_before_new_token: 15 # Pause between token trades
+  wait_after_creation: 10 # Seconds to wait after token creation (only if EXTREME FAST is disabled)
+  wait_after_buy: 5 # Holding period after buy transaction
+  wait_before_new_token: 5 # Pause between token trades
 
 # Token and account management
 cleanup:

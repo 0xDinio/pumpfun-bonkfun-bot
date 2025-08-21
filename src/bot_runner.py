@@ -1,12 +1,14 @@
 import asyncio
 import logging
 import multiprocessing
+import sys
 from datetime import datetime
 from pathlib import Path
 
-import uvloop
-
-asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+# Windows-compatible uvloop setup
+if sys.platform != "win32":
+    import uvloop
+    asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 
 from config_loader import (
     get_platform_from_config,
@@ -14,8 +16,11 @@ from config_loader import (
     print_config_summary,
     validate_platform_listener_combination,
 )
+from sim import PortfolioSimulator, ValueMode
 from trading.universal_trader import UniversalTrader
-from utils.logger import setup_file_logging
+from utils.logger import get_logger, setup_file_logging
+
+logger = get_logger(__name__)
 
 
 def setup_logging(bot_name: str):
@@ -136,6 +141,36 @@ async def start_bot(config_path: str):
             marry_mode=cfg["filters"].get("marry_mode", False),
             yolo_mode=cfg["filters"].get("yolo_mode", False),
         )
+        
+        # Configure dry-run and safety flags
+        trader.halt_flag = cfg.get("HALT", False)
+        trader.dry_run_flag = cfg.get("DRY_RUN", False)
+        trader.dry_run_duration_seconds = cfg.get("DRY_RUN_DURATION_SECONDS", 300)
+        trader.debug_valuation_flag = cfg.get("DEBUG_VALUATION", False)
+        
+        # Set up safety flags on traders (if they exist)
+        if trader.buyer:
+            trader.buyer.halt_flag = trader.halt_flag
+            trader.buyer.dry_run_flag = trader.dry_run_flag
+        if trader.seller:
+            trader.seller.halt_flag = trader.halt_flag
+            trader.seller.dry_run_flag = trader.dry_run_flag
+        
+        # Initialize portfolio simulator if in dry-run mode
+        if trader.dry_run_flag:
+            value_mode_str = cfg.get("DRY_RUN_VALUE_MODE", "entry")
+            value_mode = ValueMode(value_mode_str.lower())
+            starting_sol = cfg.get("DRY_RUN_STARTING_SOL", 3.0)
+            
+            trader.portfolio_simulator = PortfolioSimulator(
+                starting_sol=starting_sol,
+                value_mode=value_mode,
+                platform_implementations=trader.platform_implementations,
+                console_reporter=trader.console_reporter,
+            )
+            # Pass debug flag to portfolio simulator
+            trader.portfolio_simulator.debug_valuation = trader.debug_valuation_flag
+            logger.info(f"DRY_RUN mode enabled with {starting_sol} SOL, value mode: {value_mode.value}")
 
         await trader.start()
 
@@ -145,6 +180,23 @@ async def start_bot(config_path: str):
 
 
 def run_bot_process(config_path):
+    """Run bot in separate process with proper UTF-8 configuration for emoji support."""
+    # Configure UTF-8 encoding for emoji support on Windows
+    import sys
+    import os
+    
+    # Force UTF-8 mode globally
+    os.environ["PYTHONUTF8"] = "1"
+    
+    # Reconfigure stdout/stderr for UTF-8 emoji support
+    try:
+        if hasattr(sys.stdout, 'reconfigure'):
+            sys.stdout.reconfigure(encoding="utf-8")
+        if hasattr(sys.stderr, 'reconfigure'):
+            sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass  # Ignore if reconfigure not available
+        
     asyncio.run(start_bot(config_path))
 
 

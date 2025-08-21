@@ -112,7 +112,7 @@ def print_curve_status(state: dict) -> None:
             progress = 100 - (left_tokens * 100) / initial_real_token_reserves
 
     print("=" * 30)
-    print(f"Complete: {'✅' if state['complete'] else '❌'}")
+    print(f"Complete: {'YES' if state['complete'] else 'NO'}")
     print(f"Progress: {progress:.2f}%")
     print(f"Token reserves: {state['real_token_reserves']:.4f}")
     print(f"SOL reserves:   {state['real_sol_reserves']:.4f}")
@@ -124,7 +124,7 @@ async def track_curve() -> None:
     Continuously track and display the state of a bonding curve.
     """
     if not RPC_URL or not TOKEN_MINT:
-        print("❌ Set SOLANA_NODE_RPC_ENDPOINT and TOKEN_MINT in .env")
+        print("ERROR: Set SOLANA_NODE_RPC_ENDPOINT and TOKEN_MINT in .env")
         return
 
     mint_pubkey: Pubkey = Pubkey.from_string(TOKEN_MINT)
@@ -142,7 +142,7 @@ async def track_curve() -> None:
                 state = parse_curve_state(data)
                 print_curve_status(state)
             except Exception as e:
-                print(f"⚠️ Error: {e}")
+                print(f"WARNING: Error: {e}")
 
             await asyncio.sleep(POLL_INTERVAL)
 

@@ -5,12 +5,17 @@ Cleaned up to remove all platform-specific hardcoding.
 
 import asyncio
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 from time import monotonic
 
-import uvloop
 from solders.pubkey import Pubkey
+
+# Windows-compatible uvloop setup
+if sys.platform != "win32":
+    import uvloop
+    asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 
 from cleanup.modes import (
     handle_cleanup_after_failure,
@@ -23,12 +28,11 @@ from core.wallet import Wallet
 from interfaces.core import Platform, TokenInfo
 from monitoring.listener_factory import ListenerFactory
 from platforms import get_platform_implementations
+from sim import PortfolioSimulator, ValueMode
 from trading.base import TradeResult
 from trading.platform_aware import PlatformAwareBuyer, PlatformAwareSeller
 from trading.position import Position
 from utils.logger import get_logger
-
-asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 
 logger = get_logger(__name__)
 
@@ -87,7 +91,14 @@ class UniversalTrader:
         """Initialize the universal trader."""
         # Core components
         self.solana_client = SolanaClient(rpc_endpoint)
-        self.wallet = Wallet(private_key)
+        
+        # Only create wallet if we have a private key (for dry-run mode)
+        if private_key and private_key.strip():
+            self.wallet = Wallet(private_key)
+        else:
+            self.wallet = None
+            logger.info("No private key provided - running in read-only mode")
+            
         self.priority_fee_manager = PriorityFeeManager(
             client=self.solana_client,
             enable_dynamic_fee=enable_dynamic_priority_fee,
@@ -120,25 +131,34 @@ class UniversalTrader:
             self.platform, self.solana_client
         )
 
-        # Create platform-aware traders
-        self.buyer = PlatformAwareBuyer(
-            self.solana_client,
-            self.wallet,
-            self.priority_fee_manager,
-            buy_amount,
-            buy_slippage,
-            max_retries,
-            extreme_fast_token_amount,
-            extreme_fast_mode,
-        )
+        # Create platform-aware traders (will be None if no wallet)
+        if self.wallet:
+            self.buyer = PlatformAwareBuyer(
+                self.solana_client,
+                self.wallet,
+                self.priority_fee_manager,
+                buy_amount,
+                buy_slippage,
+                max_retries,
+                extreme_fast_token_amount,
+                extreme_fast_mode,
+            )
 
-        self.seller = PlatformAwareSeller(
-            self.solana_client,
-            self.wallet,
-            self.priority_fee_manager,
-            sell_slippage,
-            max_retries,
-        )
+            self.seller = PlatformAwareSeller(
+                self.solana_client,
+                self.wallet,
+                self.priority_fee_manager,
+                sell_slippage,
+                max_retries,
+            )
+            
+            # Set console reporter on traders
+            self.buyer.console_reporter = self.console_reporter
+            self.seller.console_reporter = self.console_reporter
+        else:
+            self.buyer = None
+            self.seller = None
+            logger.info("Traders disabled - no wallet available")
 
         # Initialize the appropriate listener with platform filtering
         self.token_listener = ListenerFactory.create_listener(
@@ -190,6 +210,24 @@ class UniversalTrader:
         self.processing: bool = False
         self.processed_tokens: set[str] = set()
         self.token_timestamps: dict[str, float] = {}
+        
+        # Dry-run and safety flags (will be set from config)
+        self.halt_flag: bool = False
+        self.dry_run_flag: bool = False
+        self.dry_run_duration_seconds: int = 300
+        self.portfolio_simulator: PortfolioSimulator | None = None
+        
+        # Trading state
+        self.trades_simulated: int = 0
+        self.dry_run_start_time: float = 0.0
+        
+        # Console reporting
+        from monitoring.console_reporter import ConsoleReporter
+        self.console_reporter = ConsoleReporter()
+        self.console_snapshot_task: asyncio.Task | None = None
+        
+        # Debug valuation flag
+        self.debug_valuation_flag: bool = False
 
     async def start(self) -> None:
         """Start the trading bot and listen for new tokens."""
@@ -217,6 +255,18 @@ class UniversalTrader:
 
         logger.info(f"Max token age: {self.max_token_age} seconds")
 
+        # Run startup test snapshot if console reporter is enabled
+        if self.console_reporter.is_enabled:
+            await self.console_reporter.startup_test_snapshot()
+            
+        # Print comprehensive flags for debugging
+        if self.console_reporter:
+            console_flags = f"console={self.console_reporter.is_enabled} trades={self.console_reporter.verbose_trade_lines} interval={self.console_reporter.snapshot_interval} include_positions={self.console_reporter.verbose_include_positions}"
+        else:
+            console_flags = "console=False trades=False interval=0 include_positions=False"
+            
+        print(f"[VERBOSE] flags: {console_flags} dry_run={self.dry_run_flag} debug_valuation={self.debug_valuation_flag}", flush=True)
+
         try:
             health_resp = await self.solana_client.get_health()
             logger.info(f"RPC warm-up successful (getHealth passed: {health_resp})")
@@ -224,8 +274,24 @@ class UniversalTrader:
             logger.warning(f"RPC warm-up failed: {e!s}")
 
         try:
-            # Choose operating mode based on yolo_mode
-            if not self.yolo_mode:
+            # Choose operating mode based on dry_run and yolo_mode
+            if self.dry_run_flag:
+                # Dry-run mode: run for specified duration
+                logger.info(
+                    f"Running in DRY-RUN mode for {self.dry_run_duration_seconds} seconds"
+                )
+                
+                # Run manual test if debug mode is enabled
+                if self.debug_valuation_flag:
+                    await self.simulate_manual_trade(
+                        symbol="TEST", 
+                        p_buy=0.00009, 
+                        p_sell=0.000095, 
+                        amount_sol=0.1
+                    )
+                
+                await self._run_dry_run_simulation()
+            elif not self.yolo_mode:
                 # Single token mode: process one token and exit
                 logger.info(
                     "Running in single token mode - will process one token and exit"
@@ -266,6 +332,372 @@ class UniversalTrader:
         finally:
             await self._cleanup_resources()
             logger.info("Universal Trader has shut down")
+
+    async def _run_dry_run_simulation(self) -> None:
+        """Run dry-run simulation for the specified duration."""
+        import os
+        from time import monotonic
+        
+        self.dry_run_start_time = monotonic()
+        self.trades_simulated = 0
+        
+        # Create periodic snapshot task for snapshots
+        snapshot_task = asyncio.create_task(self._periodic_snapshot_task())
+        
+        # Create console snapshot task if enabled
+        if self.console_reporter.is_enabled:
+            self.console_snapshot_task = asyncio.create_task(self._console_snapshot_task())
+        
+        # Create token processing task
+        processor_task = asyncio.create_task(self._process_token_queue())
+        
+        try:
+            # Start listening for tokens
+            listener_task = asyncio.create_task(
+                self.token_listener.listen_for_tokens(
+                    lambda token: self._queue_token_for_simulation(token),
+                    self.match_string,
+                    self.bro_address,
+                )
+            )
+            
+            # Wait for duration or HALT signal
+            while True:
+                current_time = monotonic()
+                elapsed = current_time - self.dry_run_start_time
+                
+                # Check HALT flag dynamically (reload from environment)
+                halt_flag = int(os.getenv("HALT", "0")) == 1
+                if halt_flag:
+                    logger.warning("HALT signal detected - stopping dry-run simulation early")
+                    break
+                    
+                if elapsed >= self.dry_run_duration_seconds:
+                    logger.info(f"Dry-run duration complete ({self.dry_run_duration_seconds}s)")
+                    break
+                    
+                # Check every second
+                await asyncio.sleep(1)
+                
+        except Exception:
+            logger.exception("Error during dry-run simulation")
+        finally:
+            # Cancel all tasks
+            listener_task.cancel()
+            processor_task.cancel()
+            snapshot_task.cancel()
+            if self.console_snapshot_task:
+                self.console_snapshot_task.cancel()
+            
+            try:
+                await listener_task
+            except asyncio.CancelledError:
+                pass
+            try:
+                await processor_task  
+            except asyncio.CancelledError:
+                pass
+            try:
+                await snapshot_task
+            except asyncio.CancelledError:
+                pass
+            try:
+                if self.console_snapshot_task:
+                    await self.console_snapshot_task
+            except asyncio.CancelledError:
+                pass
+                
+            # Print final summary
+            await self._print_dry_run_summary()
+
+    async def _periodic_snapshot_task(self) -> None:
+        """Periodically log portfolio snapshots during simulation."""
+        await asyncio.sleep(30)  # Wait 30 seconds before first snapshot
+        
+        while True:
+            try:
+                if self.portfolio_simulator:
+                    await self.portfolio_simulator.log_periodic_snapshot()
+                await asyncio.sleep(30)  # Snapshot every 30 seconds
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("Error in periodic snapshot task")
+                await asyncio.sleep(30)
+
+    async def _console_snapshot_task(self) -> None:
+        """Periodically print console portfolio snapshots."""
+        interval = self.console_reporter.snapshot_interval
+        await asyncio.sleep(interval)  # Wait before first snapshot
+        
+        while True:
+            try:
+                if self.portfolio_simulator:
+                    portfolio_value = await self.portfolio_simulator.get_portfolio_value()
+                    stats = self.portfolio_simulator.get_summary_stats()
+                    
+                    await self.console_reporter.snapshot(
+                        sol_balance=stats["current_sol_balance"],
+                        total_value=portfolio_value,
+                        realized_pnl=stats["realized_pnl"],
+                        positions=stats["positions"]
+                    )
+                elif self.wallet:
+                    # For live trading, we don't have a portfolio simulator
+                    # Just report basic SOL balance (if we can get it)
+                    await self.console_reporter.snapshot(
+                        sol_balance=0.0,  # Would need to query actual balance
+                        total_value=0.0,
+                        realized_pnl=0.0,
+                        positions={}
+                    )
+                
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("Error in console snapshot task")
+                await asyncio.sleep(interval)
+
+    async def _queue_token_for_simulation(self, token_info: TokenInfo) -> None:
+        """Queue a token for simulation processing."""
+        token_key = str(token_info.mint)
+
+        if token_key in self.processed_tokens:
+            logger.debug(f"Token {token_info.symbol} already processed. Skipping...")
+            return
+
+        # Record timestamp when token was discovered
+        self.token_timestamps[token_key] = monotonic()
+
+        await self.token_queue.put(token_info)
+        logger.info(
+            f"Queued new token for simulation: {token_info.symbol} ({token_info.mint}) on {token_info.platform.value}"
+        )
+
+    async def _get_token_price_for_simulation(self, token_info) -> float | None:
+        """Get real token price for simulation using same logic as live trading."""
+        from sim.quote_failures import QuoteFailureLogger
+        import random
+        
+        max_retries = 8
+        base_delay = 1.0  # seconds
+        quote_logger = QuoteFailureLogger()
+        
+        # Get platform-specific implementations (same as live trading)
+        from platforms import get_platform_implementations
+        implementations = get_platform_implementations(token_info.platform, self.solana_client)
+        address_provider = implementations.address_provider
+        curve_manager = implementations.curve_manager
+        
+        # Use existing bonding curve if available from logs, otherwise derive
+        if hasattr(token_info, 'bonding_curve') and token_info.bonding_curve:
+            pool_address = token_info.bonding_curve
+            logger.info(f"[QUOTE-DEBUG] using existing bonding_curve from logs: {pool_address}")
+        else:
+            pool_address = self._get_pool_address_for_simulation(token_info, address_provider)
+            logger.info(f"[QUOTE-DEBUG] derived pool_address: {pool_address}")
+        
+        # Comprehensive debug info (requirement A)
+        logger.info(f"[QUOTE-DEBUG] platform={token_info.platform.value} mint={token_info.mint}")
+        logger.info(f"[QUOTE-DEBUG] derived_pool_addr={pool_address}")
+        logger.info(f"[QUOTE-DEBUG] commitment=confirmed")
+        logger.info(f"[QUOTE-DEBUG] program_id_used={address_provider.program_id}")
+        logger.info(f"[QUOTE-DEBUG] source=curve_manager.calculate_price")
+        
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                # Calculate retry delay with exponential backoff + jitter
+                if attempt > 0:
+                    delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 1)
+                    logger.info(f"[QUOTE-DEBUG] attempt={attempt+1} error=\"{last_error}\"")
+                    await asyncio.sleep(delay)
+                
+                # Calculate price using curve manager with confirmed commitment
+                token_price_sol = await curve_manager.calculate_price(pool_address, commitment="confirmed")
+                
+                logger.info(f"DRY_RUN: Got real quote for {token_info.symbol}: {token_price_sol:.8f} SOL (attempt {attempt+1})")
+                return token_price_sol
+                
+            except Exception as e:
+                last_error = str(e)
+                
+                if attempt < max_retries - 1:
+                    # Continue retrying
+                    logger.warning(f"DRY_RUN: Quote attempt {attempt+1} failed for {token_info.symbol}: {e}")
+                    continue
+                else:
+                    # Final attempt failed - log structured failure
+                    logger.warning(f"[QUOTE-DEBUG] platform={token_info.platform.value} pool_addr={pool_address} source=curve_manager.calculate_price reason=\"{e}\" final_attempt=True")
+                    
+                    # Log to quote_failures.ndjson
+                    quote_logger.log_failure(
+                        mint=str(token_info.mint),
+                        derived_addr=str(pool_address),
+                        commitment="confirmed",
+                        rpc_url=self.solana_client.rpc_endpoint,
+                        error=str(e),
+                        platform=token_info.platform.value,
+                        program_id=str(address_provider.program_id),
+                        attempts=max_retries
+                    )
+                    
+                    # Try fallback pricing using virtual reserves from create event
+                    fallback_price = self._get_fallback_price_from_virtual_reserves(token_info)
+                    if fallback_price:
+                        logger.warning(f"[QUOTE-FALLBACK] using virtual reserves price for mint={token_info.mint} price={fallback_price:.10f}")
+                        return fallback_price
+                    
+                    logger.warning(f"DRY_RUN: Failed to get price for {token_info.symbol} after {max_retries} attempts: {e}")
+                    return None
+                    
+        return None
+    
+    def _get_fallback_price_from_virtual_reserves(self, token_info) -> float | None:
+        """Calculate fallback price from virtual reserves if available from create event."""
+        try:
+            # Check if token_info has virtual reserves from the create event
+            if hasattr(token_info, 'virtual_sol_reserves') and hasattr(token_info, 'virtual_token_reserves'):
+                virtual_sol = getattr(token_info, 'virtual_sol_reserves', 0)
+                virtual_tokens = getattr(token_info, 'virtual_token_reserves', 0)
+                
+                if virtual_tokens > 0 and virtual_sol > 0:
+                    # Price = virtual_sol_reserves / virtual_token_reserves (in SOL/token)
+                    from core.pubkeys import LAMPORTS_PER_SOL, TOKEN_DECIMALS
+                    price_lamports = virtual_sol / virtual_tokens
+                    price_sol = price_lamports * (10**TOKEN_DECIMALS) / LAMPORTS_PER_SOL
+                    return price_sol
+            
+            # Also check if they're in a metadata dict
+            if hasattr(token_info, 'metadata') and isinstance(token_info.metadata, dict):
+                virtual_sol = token_info.metadata.get('virtual_sol_reserves', 0)
+                virtual_tokens = token_info.metadata.get('virtual_token_reserves', 0)
+                
+                if virtual_tokens > 0 and virtual_sol > 0:
+                    from core.pubkeys import LAMPORTS_PER_SOL, TOKEN_DECIMALS
+                    price_lamports = virtual_sol / virtual_tokens
+                    price_sol = price_lamports * (10**TOKEN_DECIMALS) / LAMPORTS_PER_SOL
+                    return price_sol
+                    
+        except Exception as e:
+            logger.debug(f"Failed to calculate fallback price from virtual reserves: {e}")
+            
+        return None
+
+    async def simulate_manual_trade(self, symbol: str, p_buy: float, p_sell: float, amount_sol: float = 0.1):
+        """DEBUG ONLY: Simulate a manual BUY then SELL with known prices to test portfolio math."""
+        if not self.debug_valuation_flag:
+            return
+            
+        logger.info(f"[MANUAL-TEST] Starting manual trade simulation: {symbol} buy={p_buy:.10f} sell={p_sell:.10f} amount={amount_sol}")
+        
+        try:
+            # Create a fake token info for manual testing
+            from interfaces.core import TokenInfo, Platform
+            from solders.pubkey import Pubkey
+            
+            fake_mint = Pubkey.from_string("11111111111111111111111111111112")  # System program as placeholder
+            fake_token = TokenInfo(
+                mint=fake_mint,
+                name=f"Manual Test {symbol}",
+                symbol=symbol,
+                uri="",
+                platform=Platform.PUMP_FUN,
+                creator=fake_mint,
+                user=fake_mint
+            )
+            
+            # Simulate BUY
+            estimated_fee = 0.005
+            sim_result = await self.portfolio_simulator.simulate_buy(
+                mint=fake_mint,
+                symbol=symbol,
+                sol_amount=amount_sol,
+                price_per_token=p_buy,
+                fee_sol=estimated_fee
+            )
+            
+            if sim_result and sim_result.get("success"):
+                qty = sim_result["tokens_received"]
+                logger.info(f"[MANUAL-TEST] BUY completed, qty={qty:.6f}")
+                
+                # Wait a moment, then simulate SELL
+                await asyncio.sleep(0.1)
+                
+                sell_result = await self.portfolio_simulator.simulate_sell(
+                    mint=fake_mint,
+                    symbol=symbol,
+                    price_per_token=p_sell,
+                    sell_percentage=1.0,  # Sell 100%
+                    fee_sol=estimated_fee
+                )
+                
+                if sell_result and sell_result.get("success"):
+                    sol_received = sell_result.get("sol_received", "unknown")
+                    logger.info(f"[MANUAL-TEST] SELL completed, sol_received={sol_received}")
+                
+        except Exception as e:
+            logger.error(f"[MANUAL-TEST] Failed: {e}")
+
+    def _get_pool_address_for_simulation(self, token_info, address_provider):
+        """Get pool address for simulation (same logic as PlatformAwareBuyer)."""
+        from interfaces.core import Platform
+        
+        # Try to get the address from token_info first, then derive if needed
+        if token_info.platform == Platform.PUMP_FUN:
+            if hasattr(token_info, "bonding_curve") and token_info.bonding_curve:
+                return token_info.bonding_curve
+        elif token_info.platform == Platform.LETS_BONK:
+            if hasattr(token_info, "pool_state") and token_info.pool_state:
+                return token_info.pool_state
+        
+        # Fallback to deriving the address using platform provider
+        return address_provider.derive_pool_address(token_info.mint)
+
+    async def _print_dry_run_summary(self) -> None:
+        """Print final dry-run simulation summary."""
+        if not self.portfolio_simulator:
+            logger.warning("No portfolio simulator available for summary")
+            return
+            
+        try:
+            final_value = await self.portfolio_simulator.get_portfolio_value()
+            stats = self.portfolio_simulator.get_summary_stats()
+            
+            starting_sol = stats["starting_sol"]
+            realized_pnl = stats["realized_pnl"]
+            num_positions = stats["num_positions"]
+            
+            # Calculate total PnL and percentage
+            total_pnl = final_value - starting_sol
+            pnl_percentage = (total_pnl / starting_sol) * 100 if starting_sol > 0 else 0
+            
+            elapsed = monotonic() - self.dry_run_start_time
+            
+            # Print summary
+            logger.info("=" * 60)
+            logger.info("DRY-RUN SIMULATION SUMMARY")
+            logger.info("=" * 60)
+            logger.info(f"Duration: {elapsed:.1f} seconds")
+            logger.info(f"Total trades simulated: {self.trades_simulated}")
+            logger.info(f"Starting portfolio value: {starting_sol:.4f} SOL")
+            logger.info(f"Final portfolio value: {final_value:.4f} SOL")
+            logger.info(f"Total PnL: {total_pnl:+.4f} SOL ({pnl_percentage:+.2f}%)")
+            logger.info(f"Realized PnL: {realized_pnl:+.4f} SOL")
+            logger.info(f"Active positions: {num_positions}")
+            logger.info(f"SOL balance: {stats['current_sol_balance']:.4f}")
+            
+            if num_positions > 0:
+                logger.info("Active positions:")
+                for mint_str, pos in stats["positions"].items():
+                    logger.info(f"  {pos['symbol']}: {pos['amount']:.2f} tokens @ {pos['entry_price']:.6f} SOL")
+                    
+            logger.info("=" * 60)
+            
+        except Exception:
+            logger.exception("Error generating dry-run summary")
 
     async def _wait_for_token(self) -> TokenInfo | None:
         """Wait for a single token to be detected."""
@@ -408,12 +840,58 @@ class UniversalTrader:
             logger.info(
                 f"Buying {self.buy_amount:.6f} SOL worth of {token_info.symbol} on {token_info.platform.value}..."
             )
-            buy_result: TradeResult = await self.buyer.execute(token_info)
-
-            if buy_result.success:
-                await self._handle_successful_buy(token_info, buy_result)
+            
+            if self.dry_run_flag and self.portfolio_simulator:
+                # Simulate the buy instead of executing it
+                logger.info(f"WOULD_BUY {token_info.symbol} for {self.buy_amount:.6f} SOL")
+                
+                # Get real token price using same logic as live trading
+                try:
+                    real_price = await self._get_token_price_for_simulation(token_info)
+                    if real_price is None or real_price <= 0:
+                        logger.warning(f"DRY_RUN: Unable to get quote for {token_info.symbol}, skipping trade")
+                        return
+                    
+                    # Estimate transaction fees (simplified model)
+                    estimated_fee = 0.005  # ~0.005 SOL for priority fee + tx fee
+                    
+                    sim_result = await self.portfolio_simulator.simulate_buy(
+                        mint=token_info.mint,
+                        symbol=token_info.symbol,
+                        sol_amount=self.buy_amount,
+                        price_per_token=real_price,
+                        fee_sol=estimated_fee
+                    )
+                except Exception as e:
+                    logger.warning(f"DRY_RUN: Price fetch failed for {token_info.symbol}: {e}, skipping trade")
+                    return
+                
+                if sim_result["success"]:
+                    # Create a simulated buy result
+                    buy_result = TradeResult(
+                        success=True,
+                        platform=token_info.platform,
+                        tx_signature="DRY_RUN_BUY_" + str(token_info.mint)[:16],
+                        amount=sim_result["tokens_received"],
+                        price=real_price,
+                    )
+                    self.trades_simulated += 1
+                    await self._handle_successful_buy(token_info, buy_result)
+                else:
+                    buy_result = TradeResult(
+                        success=False,
+                        platform=token_info.platform,
+                        error_message=sim_result.get("error", "Simulation failed"),
+                    )
+                    await self._handle_failed_buy(token_info, buy_result)
             else:
-                await self._handle_failed_buy(token_info, buy_result)
+                # Execute real transaction
+                buy_result: TradeResult = await self.buyer.execute(token_info)
+
+                if buy_result.success:
+                    await self._handle_successful_buy(token_info, buy_result)
+                else:
+                    await self._handle_failed_buy(token_info, buy_result)
 
             # Only wait for next token in yolo mode
             if self.yolo_mode:
@@ -498,31 +976,85 @@ class UniversalTrader:
         await asyncio.sleep(self.wait_time_after_buy)
 
         logger.info(f"Selling {token_info.symbol}...")
-        sell_result: TradeResult = await self.seller.execute(token_info)
-
-        if sell_result.success:
-            logger.info(f"Successfully sold {token_info.symbol}")
-            self._log_trade(
-                "sell",
-                token_info,
-                sell_result.price,
-                sell_result.amount,
-                sell_result.tx_signature,
-            )
-            # Close ATA if enabled
-            await handle_cleanup_after_sell(
-                self.solana_client,
-                self.wallet,
-                token_info.mint,
-                self.priority_fee_manager,
-                self.cleanup_mode,
-                self.cleanup_with_priority_fee,
-                self.cleanup_force_close_with_burn,
-            )
+        
+        if self.dry_run_flag and self.portfolio_simulator:
+            # Simulate the sell instead of executing it
+            logger.info(f"WOULD_SELL {token_info.symbol}")
+            
+            # Get real token price using same logic as live trading
+            try:
+                real_price = await self._get_token_price_for_simulation(token_info)
+                if real_price is None or real_price <= 0:
+                    logger.warning(f"DRY_RUN: Unable to get quote for {token_info.symbol}, skipping sell")
+                    return
+                
+                # Estimate transaction fees (simplified model)
+                estimated_fee = 0.005  # ~0.005 SOL for priority fee + tx fee
+                
+                sim_result = await self.portfolio_simulator.simulate_sell(
+                    mint=token_info.mint,
+                    symbol=token_info.symbol,
+                    price_per_token=real_price,
+                    sell_percentage=1.0,  # Sell entire position
+                    fee_sol=estimated_fee
+                )
+            except Exception as e:
+                logger.warning(f"DRY_RUN: Price fetch failed for {token_info.symbol}: {e}, skipping sell")
+                return
+            
+            if sim_result["success"]:
+                sell_result = TradeResult(
+                    success=True,
+                    platform=token_info.platform,
+                    tx_signature="DRY_RUN_SELL_" + str(token_info.mint)[:16],
+                    amount=sim_result["tokens_sold"],
+                    price=real_price,
+                )
+                self.trades_simulated += 1
+                logger.info(f"Successfully simulated sale of {token_info.symbol}")
+                self._log_trade(
+                    "sell",
+                    token_info,
+                    sell_result.price,
+                    sell_result.amount,
+                    sell_result.tx_signature,
+                )
+            else:
+                sell_result = TradeResult(
+                    success=False,
+                    platform=token_info.platform,
+                    error_message=sim_result.get("error", "Simulation failed"),
+                )
+                logger.error(
+                    f"Failed to simulate sale of {token_info.symbol}: {sell_result.error_message}"
+                )
         else:
-            logger.error(
-                f"Failed to sell {token_info.symbol}: {sell_result.error_message}"
-            )
+            # Execute real transaction  
+            sell_result: TradeResult = await self.seller.execute(token_info)
+
+            if sell_result.success:
+                logger.info(f"Successfully sold {token_info.symbol}")
+                self._log_trade(
+                    "sell",
+                    token_info,
+                    sell_result.price,
+                    sell_result.amount,
+                    sell_result.tx_signature,
+                )
+                # Close ATA if enabled
+                await handle_cleanup_after_sell(
+                    self.solana_client,
+                    self.wallet,
+                    token_info.mint,
+                    self.priority_fee_manager,
+                    self.cleanup_mode,
+                    self.cleanup_with_priority_fee,
+                    self.cleanup_force_close_with_burn,
+                )
+            else:
+                logger.error(
+                    f"Failed to sell {token_info.symbol}: {sell_result.error_message}"
+                )
 
     async def _monitor_position_until_exit(
         self, token_info: TokenInfo, position: Position

@@ -3,6 +3,7 @@ Platform-aware trader implementations that use the interface system.
 Final cleanup removing all platform-specific hardcoding.
 """
 
+from typing import Any
 from solders.pubkey import Pubkey
 
 from core.client import SolanaClient
@@ -40,6 +41,11 @@ class PlatformAwareBuyer(Trader):
         self.max_retries = max_retries
         self.extreme_fast_mode = extreme_fast_mode
         self.extreme_fast_token_amount = extreme_fast_token_amount
+        
+        # Safety and reporting attributes (set by bot_runner)
+        self.halt_flag: bool = False
+        self.dry_run_flag: bool = False
+        self.console_reporter: Any = None
 
     async def execute(self, token_info: TokenInfo) -> TradeResult:
         """Execute buy operation using platform-specific implementations."""
@@ -97,7 +103,7 @@ class PlatformAwareBuyer(Trader):
                 f"Total cost: {self.amount:.6f} SOL (max: {max_amount_lamports / LAMPORTS_PER_SOL:.6f} SOL)"
             )
 
-            # Send transaction
+            # Send transaction with safety checks
             tx_signature = await self.client.build_and_send_transaction(
                 instructions,
                 self.wallet.keypair,
@@ -106,12 +112,24 @@ class PlatformAwareBuyer(Trader):
                 priority_fee=await self.priority_fee_manager.calculate_priority_fee(
                     priority_accounts
                 ),
+                halt_flag=getattr(self, 'halt_flag', False),
+                dry_run_flag=getattr(self, 'dry_run_flag', False),
             )
 
             success = await self.client.confirm_transaction(tx_signature)
 
             if success:
                 logger.info(f"Buy transaction confirmed: {tx_signature}")
+                
+                # Console reporter hook for live BUY
+                if self.console_reporter:
+                    self.console_reporter.on_live_buy(
+                        symbol=token_info.symbol,
+                        signature=tx_signature,
+                        quantity=token_amount,
+                        price=token_price_sol
+                    )
+                
                 return TradeResult(
                     success=True,
                     platform=token_info.platform,
@@ -165,6 +183,11 @@ class PlatformAwareSeller(Trader):
         self.priority_fee_manager = priority_fee_manager
         self.slippage = slippage
         self.max_retries = max_retries
+        
+        # Safety and reporting attributes (set by bot_runner)
+        self.halt_flag: bool = False
+        self.dry_run_flag: bool = False
+        self.console_reporter: Any = None
 
     async def execute(self, token_info: TokenInfo) -> TradeResult:
         """Execute sell operation using platform-specific implementations."""
@@ -231,7 +254,7 @@ class PlatformAwareSeller(Trader):
                 token_info, self.wallet.pubkey, address_provider
             )
 
-            # Send transaction
+            # Send transaction with safety checks
             tx_signature = await self.client.build_and_send_transaction(
                 instructions,
                 self.wallet.keypair,
@@ -240,12 +263,24 @@ class PlatformAwareSeller(Trader):
                 priority_fee=await self.priority_fee_manager.calculate_priority_fee(
                     priority_accounts
                 ),
+                halt_flag=getattr(self, 'halt_flag', False),
+                dry_run_flag=getattr(self, 'dry_run_flag', False),
             )
 
             success = await self.client.confirm_transaction(tx_signature)
 
             if success:
                 logger.info(f"Sell transaction confirmed: {tx_signature}")
+                
+                # Console reporter hook for live SELL
+                if self.console_reporter:
+                    self.console_reporter.on_live_sell(
+                        symbol=token_info.symbol,
+                        signature=tx_signature,
+                        quantity=token_balance_decimal,
+                        price=token_price_sol
+                    )
+                
                 return TradeResult(
                     success=True,
                     platform=token_info.platform,

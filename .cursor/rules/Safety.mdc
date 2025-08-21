@@ -1,0 +1,19 @@
+---
+alwaysApply: true
+---
+
+# Operational Safety Rules
+
+## Kill Switch & Dry Run
+- Add and honor `HALT` (bool/int) at the **last mile** before any sign/send. If `HALT=1`, log `HALT_ACTIVE` and return early.
+- Add and honor `DRY_RUN` (bool). If `DRY_RUN=true`, never sign or send a transaction. Instead:
+  - Log `WOULD_BUY` / `WOULD_SELL` with full context (mint, size, slippage, priority fee).
+  - Call the portfolio simulator (see portfolio-sim.mdc).
+- Default to **DRY_RUN=true** in examples and docs.
+
+## Secrets
+- Never print `SOLANA_PRIVATE_KEY` or any secrets to logs or diffs.
+- Do not invent new env var names; use the canonical names only.
+
+## Minimal Diffs
+- Make minimal, localized hooks at the send-tx site(s); no refactors unless explicitly requested.

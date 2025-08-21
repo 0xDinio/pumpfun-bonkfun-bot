@@ -93,11 +93,12 @@ class SolanaClient:
             return result["result"]
         return None
 
-    async def get_account_info(self, pubkey: Pubkey) -> dict[str, Any]:
+    async def get_account_info(self, pubkey: Pubkey, commitment: str = "confirmed") -> dict[str, Any]:
         """Get account info from the blockchain.
 
         Args:
             pubkey: Public key of the account
+            commitment: Commitment level (processed, confirmed, finalized)
 
         Returns:
             Account info response
@@ -105,10 +106,13 @@ class SolanaClient:
         Raises:
             ValueError: If account doesn't exist or has no data
         """
+        from solana.rpc.commitment import Commitment
+        
         client = await self.get_client()
+        commitment_obj = Commitment(commitment)
         response = await client.get_account_info(
-            pubkey, encoding="base64"
-        )  # base64 encoding for account data by default
+            pubkey, encoding="base64", commitment=commitment_obj
+        )
         if not response.value:
             raise ValueError(f"Account {pubkey} not found")
         return response.value
@@ -145,6 +149,8 @@ class SolanaClient:
         skip_preflight: bool = True,
         max_retries: int = 3,
         priority_fee: int | None = None,
+        halt_flag: bool = False,
+        dry_run_flag: bool = False,
     ) -> str:
         """
         Send a transaction with optional priority fee.
@@ -154,10 +160,23 @@ class SolanaClient:
             skip_preflight: Whether to skip preflight checks.
             max_retries: Maximum number of retry attempts.
             priority_fee: Optional priority fee in microlamports.
+            halt_flag: If True, halt execution before sending.
+            dry_run_flag: If True, simulate but don't actually send transaction.
 
         Returns:
             Transaction signature.
         """
+        # HALT check - highest priority safety mechanism
+        if halt_flag:
+            logger.warning("HALT_ACTIVE - Transaction execution halted by safety flag")
+            raise RuntimeError("Transaction halted by HALT flag")
+        
+        # DRY_RUN check - simulate transaction without sending
+        if dry_run_flag:
+            logger.info("DRY_RUN active - Simulating transaction without sending")
+            # Return a fake signature for dry run
+            return "DRY_RUN_TRANSACTION_" + str(hash(str(instructions)))[:16]
+        
         client = await self.get_client()
 
         logger.info(
