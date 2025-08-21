@@ -1,4 +1,5 @@
 trades/*
+sim_data/*
 
 .vscode
 .pylintrc
