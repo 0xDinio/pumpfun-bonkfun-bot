@@ -1,4 +1,5 @@
 trades/
+trades/trades.log
 sim_data/*
 prompts/
 .specstory/
