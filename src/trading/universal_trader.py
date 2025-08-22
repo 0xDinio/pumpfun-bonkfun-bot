@@ -216,7 +216,12 @@ class UniversalTrader:
         self.dry_run_flag: bool = False
         self.dry_run_duration_seconds: int = 300
         self.sim_fee_sol: float = 0.0015  # Default dry-run fee, will be set from config
+        self.max_concurrent_positions: int = 3  # Default concurrent positions limit, will be set from config
         self.portfolio_simulator: PortfolioSimulator | None = None
+        
+        # Concurrency control
+        self._position_semaphore: asyncio.Semaphore | None = None  # Will be initialized in start()
+        self._active_tasks: set[asyncio.Task] = set()  # Track active token processing tasks
         
         # Trading state
         self.trades_simulated: int = 0
@@ -232,6 +237,10 @@ class UniversalTrader:
 
     async def start(self) -> None:
         """Start the trading bot and listen for new tokens."""
+        # Initialize concurrency control
+        self._position_semaphore = asyncio.Semaphore(self.max_concurrent_positions)
+        logger.info(f"Initialized concurrency control: max {self.max_concurrent_positions} concurrent positions")
+        
         logger.info(f"Starting Universal Trader for {self.platform.value}")
         logger.info(
             f"Match filter: {self.match_string if self.match_string else 'None'}"
@@ -786,7 +795,7 @@ class UniversalTrader:
         )
 
     async def _process_token_queue(self) -> None:
-        """Continuously process tokens from the queue, only if they're fresh."""
+        """Continuously process tokens from the queue with bounded concurrency."""
         while True:
             try:
                 token_info = await self.token_queue.get()
@@ -802,6 +811,7 @@ class UniversalTrader:
                     logger.info(
                         f"Skipping token {token_info.symbol} - too old ({token_age:.1f}s > {self.max_token_age}s)"
                     )
+                    self.token_queue.task_done()
                     continue
 
                 self.processed_tokens.add(token_key)
@@ -809,15 +819,35 @@ class UniversalTrader:
                 logger.info(
                     f"Processing fresh token: {token_info.symbol} (age: {token_age:.1f}s)"
                 )
-                await self._handle_token(token_info)
+                
+                # Create concurrent task for token processing
+                task = asyncio.create_task(self._handle_token_concurrent(token_info))
+                self._active_tasks.add(task)
+                
+                # Clean up completed tasks
+                self._active_tasks = {t for t in self._active_tasks if not t.done()}
+                
+                self.token_queue.task_done()
 
             except asyncio.CancelledError:
                 logger.info("Token queue processor was cancelled")
+                # Cancel all active tasks
+                for task in self._active_tasks:
+                    task.cancel()
                 break
             except Exception:
                 logger.exception("Error in token queue processor")
-            finally:
-                self.token_queue.task_done()
+
+    async def _handle_token_concurrent(self, token_info: TokenInfo) -> None:
+        """Handle token processing with semaphore-controlled concurrency."""
+        async with self._position_semaphore:
+            try:
+                logger.info(f"[CONCURRENT] Starting {token_info.symbol} (semaphore acquired)")
+                await self._handle_token(token_info)
+                logger.info(f"[CONCURRENT] Completed {token_info.symbol} (semaphore released)")
+            except Exception as e:
+                logger.error(f"[CONCURRENT] Error processing {token_info.symbol}: {e}")
+                # Don't re-raise - let other tasks continue
 
     async def _handle_token(self, token_info: TokenInfo) -> None:
         """Handle a new token creation event."""

@@ -139,6 +139,7 @@ def resolve_env_vars(config: dict) -> None:
         "DRY_RUN_VALUE_MODE": os.getenv("DRY_RUN_VALUE_MODE", "quote"),  # Changed default to "quote"
         "DRY_RUN_DURATION_SECONDS": int(os.getenv("DRY_RUN_DURATION_SECONDS", "300")),
         "DRY_RUN_FEE_SOL": float(os.getenv("DRY_RUN_FEE_SOL", "0.0015")),  # Configurable simulation fee
+        "MAX_CONCURRENT_POSITIONS": int(os.getenv("MAX_CONCURRENT_POSITIONS", "3")),  # Bounded concurrency
         "HALT": int(os.getenv("HALT", "0")) == 1,
         "DEBUG_VALUATION": os.getenv("DEBUG_VALUATION", "false").lower() == "true",
     }

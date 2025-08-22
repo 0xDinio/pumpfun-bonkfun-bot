@@ -133,18 +133,19 @@ class PortfolioSimulator:
         Returns:
             Total portfolio value in SOL
         """
-        total_value = self.sol_balance
-        
-        # Create snapshot to avoid "dictionary changed size during iteration"
-        for position in list(self.positions.values()):
-            token_value = await self.valuer.get_token_value_sol(
-                position.mint, 
-                position.amount, 
-                position.entry_price
-            )
-            total_value += token_value
-        
-        return total_value
+        async with self._positions_lock:
+            total_value = self.sol_balance
+            
+            # Create snapshot to avoid "dictionary changed size during iteration"
+            for position in list(self.positions.values()):
+                token_value = await self.valuer.get_token_value_sol(
+                    position.mint, 
+                    position.amount, 
+                    position.entry_price
+                )
+                total_value += token_value
+            
+            return total_value
     
     async def simulate_buy(
         self, 
@@ -170,8 +171,9 @@ class PortfolioSimulator:
             # Pre-trade snapshot for debugging
             if self.debug_valuation:
                 pre_value = await self.get_portfolio_value()
-                pre_positions = len(self.positions)
-                logger.info(f"[DEBUG] pre: sol={self.sol_balance:.6f} value={pre_value:.6f} positions={pre_positions}")
+                async with self._positions_lock:
+                    pre_positions = len(self.positions)
+                    logger.info(f"[DEBUG] pre: sol={self.sol_balance:.6f} value={pre_value:.6f} positions={pre_positions}")
             
             if sol_amount + fee_sol > self.sol_balance:
                 return {
@@ -189,31 +191,33 @@ class PortfolioSimulator:
             # Calculate portfolio value before trade
             portfolio_value_before = await self.get_portfolio_value()
             
-            # Update balances (deduct both buy amount and fees)
-            self.sol_balance -= (sol_amount + fee_sol)
-            
-            # Add to position or create new one
-            mint_str = str(mint)
-            if mint_str in self.positions:
-                # Average down the position
-                existing = self.positions[mint_str]
-                total_tokens = existing.amount + tokens_received
-                total_value = existing.entry_value + sol_amount
-                new_avg_price = total_value / total_tokens
+            # CRITICAL SECTION: Protect state mutations
+            async with self._positions_lock:
+                # Update balances (deduct both buy amount and fees)
+                self.sol_balance -= (sol_amount + fee_sol)
                 
-                self.positions[mint_str] = TokenPosition(
-                    mint=mint,
-                    symbol=symbol,
-                    amount=total_tokens,
-                    entry_price=new_avg_price
-                )
-            else:
-                self.positions[mint_str] = TokenPosition(
-                    mint=mint,
-                    symbol=symbol,
-                    amount=tokens_received,
-                    entry_price=price_per_token
-                )
+                # Add to position or create new one
+                mint_str = str(mint)
+                if mint_str in self.positions:
+                    # Average down the position
+                    existing = self.positions[mint_str]
+                    total_tokens = existing.amount + tokens_received
+                    total_value = existing.entry_value + sol_amount
+                    new_avg_price = total_value / total_tokens
+                    
+                    self.positions[mint_str] = TokenPosition(
+                        mint=mint,
+                        symbol=symbol,
+                        amount=total_tokens,
+                        entry_price=new_avg_price
+                    )
+                else:
+                    self.positions[mint_str] = TokenPosition(
+                        mint=mint,
+                        symbol=symbol,
+                        amount=tokens_received,
+                        entry_price=price_per_token
+                    )
             
             # Calculate portfolio value after trade
             portfolio_value_after = await self.get_portfolio_value()
@@ -317,18 +321,20 @@ class PortfolioSimulator:
             # Pre-trade snapshot for debugging
             if self.debug_valuation:
                 pre_value = await self.get_portfolio_value()
-                pre_positions = len(self.positions)
-                logger.info(f"[DEBUG] pre: sol={self.sol_balance:.6f} value={pre_value:.6f} positions={pre_positions}")
+                async with self._positions_lock:
+                    pre_positions = len(self.positions)
+                    logger.info(f"[DEBUG] pre: sol={self.sol_balance:.6f} value={pre_value:.6f} positions={pre_positions}")
             
-            if mint_str not in self.positions:
-                return {
-                    "success": False,
-                    "error": f"No position found for {symbol}"
-                }
-            
-            position = self.positions[mint_str]
-            tokens_to_sell = position.amount * sell_percentage
-            sol_received = tokens_to_sell * price_per_token
+            async with self._positions_lock:
+                if mint_str not in self.positions:
+                    return {
+                        "success": False,
+                        "error": f"No position found for {symbol}"
+                    }
+                
+                position = self.positions[mint_str]
+                tokens_to_sell = position.amount * sell_percentage
+                sol_received = tokens_to_sell * price_per_token
             
             # Debug trade details
             if self.debug_valuation:
@@ -337,29 +343,31 @@ class PortfolioSimulator:
             # Calculate portfolio value before trade
             portfolio_value_before = await self.get_portfolio_value()
             
-            # Calculate PnL for this trade
-            cost_basis = tokens_to_sell * position.entry_price
-            trade_pnl = sol_received - cost_basis
-            self.realized_pnl += trade_pnl
-            
-            # Update balances (add received SOL minus fees)
-            self.sol_balance += (sol_received - fee_sol)
-            
-            # Update or remove position
-            if sell_percentage >= 1.0:
-                # Sell entire position
-                del self.positions[mint_str]
-            else:
-                # Partial sell - update remaining position
-                remaining_tokens = position.amount - tokens_to_sell
-                remaining_value = remaining_tokens * position.entry_price
+            # CRITICAL SECTION: Protect state mutations
+            async with self._positions_lock:
+                # Calculate PnL for this trade
+                cost_basis = tokens_to_sell * position.entry_price
+                trade_pnl = sol_received - cost_basis
+                self.realized_pnl += trade_pnl
                 
-                self.positions[mint_str] = TokenPosition(
-                    mint=mint,
-                    symbol=symbol,
-                    amount=remaining_tokens,
-                    entry_price=position.entry_price
-                )
+                # Update balances (add received SOL minus fees)
+                self.sol_balance += (sol_received - fee_sol)
+                
+                # Update or remove position
+                if sell_percentage >= 1.0:
+                    # Sell entire position
+                    del self.positions[mint_str]
+                else:
+                    # Partial sell - update remaining position
+                    remaining_tokens = position.amount - tokens_to_sell
+                    remaining_value = remaining_tokens * position.entry_price
+                    
+                    self.positions[mint_str] = TokenPosition(
+                        mint=mint,
+                        symbol=symbol,
+                        amount=remaining_tokens,
+                        entry_price=position.entry_price
+                    )
             
             # Calculate portfolio value after trade
             portfolio_value_after = await self.get_portfolio_value()
