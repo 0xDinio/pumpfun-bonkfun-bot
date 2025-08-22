@@ -215,6 +215,7 @@ class UniversalTrader:
         self.halt_flag: bool = False
         self.dry_run_flag: bool = False
         self.dry_run_duration_seconds: int = 300
+        self.sim_fee_sol: float = 0.0015  # Default dry-run fee, will be set from config
         self.portfolio_simulator: PortfolioSimulator | None = None
         
         # Trading state
@@ -610,7 +611,7 @@ class UniversalTrader:
             )
             
             # Simulate BUY
-            estimated_fee = 0.005
+            estimated_fee = self.sim_fee_sol
             sim_result = await self.portfolio_simulator.simulate_buy(
                 mint=fake_mint,
                 symbol=symbol,
@@ -853,7 +854,7 @@ class UniversalTrader:
                         return
                     
                     # Estimate transaction fees (simplified model)
-                    estimated_fee = 0.005  # ~0.005 SOL for priority fee + tx fee
+                    estimated_fee = self.sim_fee_sol
                     
                     sim_result = await self.portfolio_simulator.simulate_buy(
                         mint=token_info.mint,
@@ -989,7 +990,7 @@ class UniversalTrader:
                     return
                 
                 # Estimate transaction fees (simplified model)
-                estimated_fee = 0.005  # ~0.005 SOL for priority fee + tx fee
+                estimated_fee = self.sim_fee_sol
                 
                 sim_result = await self.portfolio_simulator.simulate_sell(
                     mint=token_info.mint,
@@ -1102,7 +1103,7 @@ class UniversalTrader:
                                 break  # Exit monitoring loop since we can't get price
                             
                             # Estimate transaction fees (simplified model)
-                            estimated_fee = 0.005
+                            estimated_fee = self.sim_fee_sol
                             
                             # Simulate the sell (100% of position)
                             sim_result = await self.portfolio_simulator.simulate_sell(

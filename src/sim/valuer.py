@@ -66,7 +66,7 @@ class TokenValuer:
                         return value
                     except Exception as e:
                         # Enhanced error logging for quote failures
-                        platform_name = getattr(self.platform_implementations, '__class__', {}).get('__name__', 'unknown')
+                        platform_name = type(self.platform_implementations).__name__
                         logger.warning(f"[QUOTE-DEBUG] platform={platform_name} pool_addr={pool_address} source=curve_manager.calculate_price reason=\"{e}\"")
                         logger.warning(f"Failed to get quote price for {mint}: {e}, falling back to entry price")
                         return amount * (entry_price or 0.0)

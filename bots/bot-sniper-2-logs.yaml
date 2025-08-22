@@ -23,13 +23,13 @@ geyser:
 # Trading parameters
 # Control trade execution: amount of SOL per trade and acceptable price deviation
 trade:
-  buy_amount: 1 # Amount of SOL to spend when buying (in SOL)
+  buy_amount: 0.5 # Amount of SOL to spend when buying (in SOL)
   buy_slippage: 0.2 # Maximum acceptable price deviation (0.2 = 20%)
   sell_slippage: 0.3
 
   # Exit strategy configuration
   exit_strategy: "tp_sl" # Options: "time_based", "tp_sl", "manual"
-  take_profit_percentage: 0.95 # Take profit at 40% gain (0.4 = 40%)
+  take_profit_percentage: 0.9 # Take profit at 40% gain (0.4 = 40%)
   stop_loss_percentage: 0.025 # Stop loss at 40% loss (0.4 = 40%)
   max_hold_time: 1 # Maximum hold time in seconds
   price_check_interval: 0.1 # Check price every 2 seconds

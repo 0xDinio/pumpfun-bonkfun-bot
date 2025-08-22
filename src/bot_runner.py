@@ -146,6 +146,7 @@ async def start_bot(config_path: str):
         trader.halt_flag = cfg.get("HALT", False)
         trader.dry_run_flag = cfg.get("DRY_RUN", False)
         trader.dry_run_duration_seconds = cfg.get("DRY_RUN_DURATION_SECONDS", 300)
+        trader.sim_fee_sol = cfg.get("DRY_RUN_FEE_SOL", 0.0015)
         trader.debug_valuation_flag = cfg.get("DEBUG_VALUATION", False)
         
         # Set up safety flags on traders (if they exist)

@@ -118,7 +118,7 @@ class PortfolioSimulator:
                 "realized_pnl": self.realized_pnl,
                 "positions": {
                     mint_str: pos.to_dict() 
-                    for mint_str, pos in self.positions.items()
+                    for mint_str, pos in list(self.positions.items())
                 },
                 "last_updated": datetime.utcnow().isoformat(),
             }
