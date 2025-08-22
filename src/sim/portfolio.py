@@ -2,6 +2,7 @@
 Portfolio simulator for dry-run trading.
 """
 
+import asyncio
 import os
 from datetime import datetime
 from typing import Any, Dict, Optional
@@ -75,6 +76,9 @@ class PortfolioSimulator:
         
         # Debug flag
         self.debug_valuation = os.getenv("DEBUG_VALUATION", "false").lower() == "true"
+        
+        # Lock for thread-safe position dictionary access
+        self._positions_lock = asyncio.Lock()
         
         # Try to load existing state
         self._load_state()
@@ -220,26 +224,31 @@ class PortfolioSimulator:
                 post_positions = len(self.positions)
                 logger.info(f"[DEBUG] post: sol={self.sol_balance:.6f} value={portfolio_value_after:.6f} delta={delta:+.6f} realized_pnl_cum={self.realized_pnl:.6f} positions={post_positions}")
                 
-                # Assertion checks for BUY invariants
+                # Calculate dual deltas for clearer reporting
+                cash_delta = -(sol_amount + fee_sol)  # Cash outflow for BUY
+                
+                # Assertion checks for BUY invariants (MTM model)
                 try:
                     # 1) q == B / p_buy (exact fill)
                     expected_qty = sol_amount / price_per_token
                     assert_approx_equal(tokens_received, expected_qty, rel=1e-6, msg="BUY quantity check")
                     
-                    # 2) S_post == S_pre - B - f_buy
-                    expected_sol = portfolio_value_before - sol_amount - fee_sol + (self.sol_balance - (portfolio_value_before - sol_amount - fee_sol))
-                    # Note: Expected SOL balance check - need to account for initial balance properly
+                    # 2) MTM value delta ≈ -fee_sol (small quote drift allowed)
+                    expected_value_delta = -fee_sol
+                    tolerance = max(1e-6, fee_sol * 0.5)  # Allow quote drift
+                    assert_approx_equal(delta, expected_value_delta, abs_tol=tolerance, msg="BUY MTM value delta check")
                     
-                    # 3) Vpost ≈ Vpre - f_buy (value drops only by fees in mark-to-quote)
-                    expected_delta = -fee_sol
-                    assert_approx_equal(delta, expected_delta, abs_tol=1e-4, msg="BUY value delta check")
-                    
-                    logger.info(f"[DEBUG] BUY assertions passed: qty={tokens_received:.6f}, delta={delta:.6f}")
+                    logger.info(f"[DEBUG] BUY assertions passed: qty={tokens_received:.6f}, cash_delta={cash_delta:.6f}, value_delta={delta:.6f}")
                     
                 except AssertionError as e:
-                    logger.warning(f"[DEBUG] BUY assertion failed: {e}")
+                    logger.warning(f"[DEBUG] BUY assertion failed: actual={delta:.6f}, expected≈{expected_value_delta:.6f}, tolerance={tolerance:.6f}: {e}")
             
-            # Log the trade
+            # Log the trade (include cash_delta if debug mode)
+            if self.debug_valuation:
+                cash_delta_for_log = -(sol_amount + fee_sol)
+            else:
+                cash_delta_for_log = None
+                
             self._log_trade_summary(
                 action="BUY",
                 symbol=symbol,
@@ -248,7 +257,8 @@ class PortfolioSimulator:
                 value_before=portfolio_value_before,
                 value_after=portfolio_value_after,
                 delta=delta,
-                realized_pnl=self.realized_pnl
+                realized_pnl=self.realized_pnl,
+                cash_delta=cash_delta_for_log
             )
             
             # Console reporter hook for dry-run BUY
@@ -360,24 +370,27 @@ class PortfolioSimulator:
                 post_positions = len(self.positions)
                 logger.info(f"[DEBUG] post: sol={self.sol_balance:.6f} value={portfolio_value_after:.6f} delta={delta:+.6f} realized_pnl_cum={self.realized_pnl:.6f} positions={post_positions}")
                 
-                # Assertion checks for SELL invariants
+                # Calculate dual deltas for clearer reporting
+                cash_delta = sol_received - fee_sol  # Cash inflow for SELL
+                
+                # Assertion checks for SELL invariants (MTM model)
                 try:
-                    # 6) S_post == S_pre + q * p_sell - f_sell
-                    # 8) realized_pnl_cum increases by (q * (p_sell - p_buy))
-                    # 9) delta == Vpost - Vpre → should be POSITIVE ≈ -f_sell + q*(p_sell - p_buy)
+                    # MTM model: PnL already included in pre-trade valuation, so delta ≈ -fee_sol
+                    expected_value_delta = -fee_sol
+                    tolerance = max(1e-6, fee_sol * 0.5)  # Allow quote drift
+                    assert_approx_equal(delta, expected_value_delta, abs_tol=tolerance, msg="SELL MTM value delta check")
                     
-                    cost_basis = tokens_to_sell * position.entry_price
-                    trade_pnl = sol_received - cost_basis
-                    expected_delta = -fee_sol + trade_pnl
-                    
-                    assert_approx_equal(delta, expected_delta, abs_tol=1e-4, msg="SELL value delta check")
-                    
-                    logger.info(f"[DEBUG] SELL assertions passed: delta={delta:.6f}, trade_pnl={trade_pnl:.6f}")
+                    logger.info(f"[DEBUG] SELL assertions passed: qty={tokens_to_sell:.6f}, cash_delta={cash_delta:.6f}, value_delta={delta:.6f}")
                     
                 except AssertionError as e:
-                    logger.warning(f"[DEBUG] SELL assertion failed: {e}")
+                    logger.warning(f"[DEBUG] SELL assertion failed: actual={delta:.6f}, expected≈{expected_value_delta:.6f}, tolerance={tolerance:.6f}: {e}")
             
-            # Log the trade
+            # Log the trade (include cash_delta if debug mode)
+            if self.debug_valuation:
+                cash_delta_for_log = sol_received - fee_sol
+            else:
+                cash_delta_for_log = None
+                
             self._log_trade_summary(
                 action="SELL",
                 symbol=symbol,
@@ -386,7 +399,8 @@ class PortfolioSimulator:
                 value_before=portfolio_value_before,
                 value_after=portfolio_value_after,
                 delta=delta,
-                realized_pnl=self.realized_pnl
+                realized_pnl=self.realized_pnl,
+                cash_delta=cash_delta_for_log
             )
             
             # Console reporter hook for dry-run SELL
@@ -459,7 +473,7 @@ class PortfolioSimulator:
             "current_sol_balance": self.sol_balance,
             "realized_pnl": self.realized_pnl,
             "num_positions": len(self.positions),
-            "positions": {mint_str: pos.to_dict() for mint_str, pos in self.positions.items()},
+            "positions": {mint_str: pos.to_dict() for mint_str, pos in list(self.positions.items())},
         }
 
     def _log_trade_summary(
@@ -471,16 +485,27 @@ class PortfolioSimulator:
         value_before: float,
         value_after: float,
         delta: float,
-        realized_pnl: float
+        realized_pnl: float,
+        cash_delta: float = None
     ) -> None:
         """Log trade summary to console and files."""
-        # Console summary line
+        # Console summary line with dual deltas if available
         mode = self.valuer.mode.value
-        summary = (
-            f"[DRY] {action} {symbol} qty={quantity:.4f} @ {price:.6f} | "
-            f"value: {value_before:.4f} -> {value_after:.4f} (Delta {delta:+.4f}) | "
-            f"realized_pnl_cum={realized_pnl:.4f} | mode={mode}"
-        )
+        if cash_delta is not None:
+            # Debug mode: show both cash and value deltas
+            summary = (
+                f"[DRY] {action} {symbol} qty={quantity:.4f} @ {price:.6f} | "
+                f"Δcash={cash_delta:+.4f} Δvalue={delta:+.4f} | "
+                f"value: {value_before:.4f} -> {value_after:.4f} | "
+                f"realized_pnl_cum={realized_pnl:.4f} | mode={mode}"
+            )
+        else:
+            # Normal mode: original format
+            summary = (
+                f"[DRY] {action} {symbol} qty={quantity:.4f} @ {price:.6f} | "
+                f"value: {value_before:.4f} -> {value_after:.4f} (d {delta:+.4f}) | "
+                f"realized_pnl_cum={realized_pnl:.4f} | mode={mode}"
+            )
         logger.info(summary)
         
         # Log trade event to NDJSON

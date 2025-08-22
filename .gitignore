@@ -1,9 +1,10 @@
-trades/
-trades/trades.log
+trades/*
 sim_data/*
 prompts/
 .specstory/
-.cursorindexing/
+.cursorindexingignore
+bots/*
+profitable/
 
 .vscode
 .pylintrc

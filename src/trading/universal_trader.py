@@ -972,7 +972,7 @@ class UniversalTrader:
 
     async def _handle_time_based_exit(self, token_info: TokenInfo) -> None:
         """Handle legacy time-based exit strategy."""
-        logger.info(f"Waiting for {self.wait_time_after_buy} seconds before selling...")
+        logger.info(f"Warmup after buy (wait_after_buy={self.wait_time_after_buy}s)...")
         await asyncio.sleep(self.wait_time_after_buy)
 
         logger.info(f"Selling {token_info.symbol}...")
@@ -1077,7 +1077,10 @@ class UniversalTrader:
                 should_exit, exit_reason = position.should_exit(current_price)
 
                 if should_exit and exit_reason:
-                    logger.info(f"Exit condition met: {exit_reason.value}")
+                    if exit_reason.value == "max_hold_time":
+                        logger.info(f"Max hold time reached ({self.max_hold_time}s) — exiting")
+                    else:
+                        logger.info(f"Exit condition met: {exit_reason.value}")
                     logger.info(f"Current price: {current_price:.8f} SOL")
 
                     # Log PnL before exit
