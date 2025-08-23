@@ -38,7 +38,7 @@ trade:
   # When enabled, skips waiting for the bonding curve to stabilize and RPC price check.
   # The bot buys the specified number of tokens directly, making the process faster but less precise.
   extreme_fast_mode: true
-  extreme_fast_token_amount: 10000 # Amount of tokens to buy
+  extreme_fast_token_amount:  # Amount of tokens to buy
 
 # Priority fee configuration
 # Manage transaction speed and cost on the Solana network.

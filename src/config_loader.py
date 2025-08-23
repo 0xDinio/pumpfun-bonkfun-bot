@@ -86,6 +86,35 @@ PLATFORM_LISTENER_COMPATIBILITY = {
 }
 
 
+def _parse_skip_keywords(keywords_str: str) -> list[str]:
+    """Parse comma-separated keywords, trim whitespace, and convert to lowercase."""
+    if not keywords_str or not keywords_str.strip():
+        return []
+    
+    keywords = [kw.strip().lower() for kw in keywords_str.split(",")]
+    # Filter out empty strings after trimming
+    return [kw for kw in keywords if kw]
+
+
+def _merge_skip_keywords(config: dict) -> None:
+    """Merge skip keywords from YAML and environment, ensuring all are lowercase."""
+    env_keywords = config.get("SKIP_SYMBOL_KEYWORDS", [])
+    
+    # Get YAML keywords from filters.skip_symbol_keywords
+    yaml_keywords = []
+    filters = config.get("filters", {})
+    if isinstance(filters, dict):
+        yaml_skip = filters.get("skip_symbol_keywords", [])
+        if isinstance(yaml_skip, list):
+            yaml_keywords = [kw.strip().lower() for kw in yaml_skip if kw and kw.strip()]
+        elif isinstance(yaml_skip, str):
+            yaml_keywords = _parse_skip_keywords(yaml_skip)
+    
+    # Combine and deduplicate
+    all_keywords = list(set(env_keywords + yaml_keywords))
+    config["SKIP_SYMBOL_KEYWORDS"] = all_keywords
+
+
 def load_bot_config(path: str) -> dict:
     """Load and validate a bot configuration from a YAML file."""
     config_path = Path(path)
@@ -140,6 +169,7 @@ def resolve_env_vars(config: dict) -> None:
         "DRY_RUN_DURATION_SECONDS": int(os.getenv("DRY_RUN_DURATION_SECONDS", "300")),
         "DRY_RUN_FEE_SOL": float(os.getenv("DRY_RUN_FEE_SOL", "0.0015")),  # Configurable simulation fee
         "MAX_CONCURRENT_POSITIONS": int(os.getenv("MAX_CONCURRENT_POSITIONS", "3")),  # Bounded concurrency
+        "SKIP_SYMBOL_KEYWORDS": _parse_skip_keywords(os.getenv("SKIP_SYMBOL_KEYWORDS", "")),  # Skip by symbol keywords
         "HALT": int(os.getenv("HALT", "0")) == 1,
         "DEBUG_VALUATION": os.getenv("DEBUG_VALUATION", "false").lower() == "true",
     }
@@ -153,6 +183,9 @@ def resolve_env_vars(config: dict) -> None:
     }
     config.update(dry_run_env)
     config.update(verbose_env)
+    
+    # Merge skip keywords from YAML and environment
+    _merge_skip_keywords(config)
 
 
 def get_nested_value(config: dict, path: str) -> Any:

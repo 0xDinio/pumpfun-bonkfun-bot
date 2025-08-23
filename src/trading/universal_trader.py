@@ -217,6 +217,7 @@ class UniversalTrader:
         self.dry_run_duration_seconds: int = 300
         self.sim_fee_sol: float = 0.0015  # Default dry-run fee, will be set from config
         self.max_concurrent_positions: int = 3  # Default concurrent positions limit, will be set from config
+        self.skip_symbol_keywords: list[str] = []  # Skip tokens by symbol keywords, will be set from config
         self.portfolio_simulator: PortfolioSimulator | None = None
         
         # Concurrency control
@@ -264,6 +265,12 @@ class UniversalTrader:
             )
 
         logger.info(f"Max token age: {self.max_token_age} seconds")
+        
+        if self.skip_symbol_keywords:
+            keywords_str = ",".join(self.skip_symbol_keywords)
+            logger.info(f"Skip symbol keywords: {keywords_str}")
+        else:
+            logger.info("Skip symbol keywords: None")
 
         # Run startup test snapshot if console reporter is enabled
         if self.console_reporter.is_enabled:
@@ -477,6 +484,12 @@ class UniversalTrader:
             logger.debug(f"Token {token_info.symbol} already processed. Skipping...")
             return
 
+        # Apply symbol keyword filter
+        if self._should_skip_by_symbol(token_info):
+            keywords_str = ",".join(self.skip_symbol_keywords)
+            logger.info(f"Skipping token by keyword filter: {token_info.symbol} ({token_info.mint}) | keywords={keywords_str}")
+            return
+
         # Record timestamp when token was discovered
         self.token_timestamps[token_key] = monotonic()
 
@@ -564,6 +577,33 @@ class UniversalTrader:
                     return None
                     
         return None
+    
+    def _should_skip_by_symbol(self, token_info) -> bool:
+        """Check if token should be skipped based on symbol keywords.
+        
+        Args:
+            token_info: TokenInfo object with symbol and name attributes
+            
+        Returns:
+            True if token should be skipped, False otherwise
+        """
+        if not self.skip_symbol_keywords:
+            return False
+            
+        # Check symbol (case-insensitive substring match)
+        symbol_lower = token_info.symbol.lower() if token_info.symbol else ""
+        
+        # Check name if available (case-insensitive substring match)
+        name_lower = ""
+        if hasattr(token_info, 'name') and token_info.name:
+            name_lower = token_info.name.lower()
+        
+        # Check if any keyword is found in symbol or name
+        for keyword in self.skip_symbol_keywords:
+            if keyword in symbol_lower or (name_lower and keyword in name_lower):
+                return True
+                
+        return False
     
     def _get_fallback_price_from_virtual_reserves(self, token_info) -> float | None:
         """Calculate fallback price from virtual reserves if available from create event."""
@@ -784,6 +824,12 @@ class UniversalTrader:
 
         if token_key in self.processed_tokens:
             logger.debug(f"Token {token_info.symbol} already processed. Skipping...")
+            return
+
+        # Apply symbol keyword filter
+        if self._should_skip_by_symbol(token_info):
+            keywords_str = ",".join(self.skip_symbol_keywords)
+            logger.info(f"Skipping token by keyword filter: {token_info.symbol} ({token_info.mint}) | keywords={keywords_str}")
             return
 
         # Record timestamp when token was discovered
