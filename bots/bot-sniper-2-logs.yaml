@@ -77,6 +77,14 @@ cleanup:
   force_close_with_burn: false # Force burning remaining tokens before closing account
   with_priority_fee: false # Use priority fees for cleanup transactions
 
+# Symbol throttle configuration
+# Prevents flooding from too many tokens with the same/similar symbol
+symbol_throttle:
+  SYMBOL_TRADE_LIMIT: 2           # max accepts per normalized symbol in window
+  SYMBOL_WINDOW_SECONDS: 60       # rolling window size in seconds
+  SYMBOL_CREATOR_LIMIT: 1         # optional per-creator limit; 0 disables
+  SYMBOL_MIN_SPACING_SECONDS: 5   # optional minimum spacing between same symbol; 0 disables
+
 # Node provider configuration (not implemented)
 node:
   max_rps: 25 # Maximum requests per second

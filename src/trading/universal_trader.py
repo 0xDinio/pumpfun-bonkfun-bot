@@ -32,6 +32,7 @@ from sim import PortfolioSimulator, ValueMode
 from trading.base import TradeResult
 from trading.platform_aware import PlatformAwareBuyer, PlatformAwareSeller
 from trading.position import Position
+from trading.symbol_throttle import SymbolThrottle
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -87,6 +88,8 @@ class UniversalTrader:
         bro_address: str | None = None,
         marry_mode: bool = False,
         yolo_mode: bool = False,
+        # Config object for additional configuration
+        config: dict | None = None,
     ):
         """Initialize the universal trader."""
         # Core components
@@ -235,6 +238,47 @@ class UniversalTrader:
         
         # Debug valuation flag
         self.debug_valuation_flag: bool = False
+        
+        # Store config for symbol throttle and other features
+        self.config = config or {}
+        
+        # Initialize symbol throttle
+        self._init_symbol_throttle()
+
+    def _init_symbol_throttle(self) -> None:
+        """Initialize symbol throttle with configuration from YAML or env variables."""
+        import os
+        
+        # Try to get symbol throttle config from YAML first
+        symbol_throttle_config = self.config.get("symbol_throttle", {})
+        
+        # Get settings with fallbacks to env variables, then defaults
+        per_symbol_limit = (
+            symbol_throttle_config.get("SYMBOL_TRADE_LIMIT") or
+            int(os.getenv("SYMBOL_TRADE_LIMIT", "2"))
+        )
+        window_seconds = (
+            symbol_throttle_config.get("SYMBOL_WINDOW_SECONDS") or
+            int(os.getenv("SYMBOL_WINDOW_SECONDS", "60"))
+        )
+        per_creator_limit = (
+            symbol_throttle_config.get("SYMBOL_CREATOR_LIMIT") or
+            int(os.getenv("SYMBOL_CREATOR_LIMIT", "0"))
+        )
+        min_spacing_seconds = (
+            symbol_throttle_config.get("SYMBOL_MIN_SPACING_SECONDS") or
+            int(os.getenv("SYMBOL_MIN_SPACING_SECONDS", "0"))
+        )
+        
+        self.symbol_throttle = SymbolThrottle(
+            per_symbol_limit=per_symbol_limit,
+            window_seconds=window_seconds,
+            per_creator_limit=per_creator_limit,
+            min_spacing_seconds=min_spacing_seconds
+        )
+        
+        logger.info(f"Symbol throttle initialized: limit={per_symbol_limit}, window={window_seconds}s, "
+                   f"creator_limit={per_creator_limit}, spacing={min_spacing_seconds}s")
 
     async def start(self) -> None:
         """Start the trading bot and listen for new tokens."""
@@ -488,6 +532,17 @@ class UniversalTrader:
         if self._should_skip_by_symbol(token_info):
             keywords_str = ",".join(self.skip_symbol_keywords)
             logger.info(f"Skipping token by keyword filter: {token_info.symbol} ({token_info.mint}) | keywords={keywords_str}")
+            return
+
+        # Apply symbol throttle filter (check without recording at queue time)
+        should_accept, reason, normalized_key = self.symbol_throttle.check_without_recording(
+            mint=str(token_info.mint),
+            symbol=token_info.symbol or "",
+            creator=getattr(token_info, 'creator', None)
+        )
+        
+        if not should_accept:
+            logger.info(f"Skipping {token_info.symbol} ({token_info.mint}) - {reason} key={normalized_key}")
             return
 
         # Record timestamp when token was discovered
@@ -912,6 +967,17 @@ class UniversalTrader:
                     f"Waiting for {self.wait_time_after_creation} seconds for the pool/curve to stabilize..."
                 )
                 await asyncio.sleep(self.wait_time_after_creation)
+
+            # Buy-time symbol throttle guard (defense in depth) - record the mint here
+            should_accept, reason, normalized_key = self.symbol_throttle.should_accept(
+                mint=str(token_info.mint),
+                symbol=token_info.symbol or "",
+                creator=getattr(token_info, 'creator', None)
+            )
+            
+            if not should_accept:
+                logger.info(f"[BUY-GUARD] Skipping {token_info.symbol}: {reason}")
+                return
 
             # Buy token
             logger.info(
