@@ -7,6 +7,8 @@ import os
 import sys
 from datetime import datetime
 from typing import Any, Dict, Optional
+
+from core.fx import get_fx
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -22,6 +24,11 @@ class ConsoleReporter:
         self.verbose_portfolio_interval = int(os.getenv("VERBOSE_PORTFOLIO_INTERVAL_SECONDS", "30")) if self.verbose_console else 30
         self.verbose_include_positions = os.getenv("VERBOSE_INCLUDE_POSITIONS", "false").lower() == "true"
         self.use_logger_only = os.getenv("VERBOSE_USE_LOGGER_ONLY", "false").lower() == "true"
+        
+        # Portfolio display currency configuration
+        self.display_currency = os.getenv("PORTFOLIO_DISPLAY_CCY", "SOL").upper()
+        self.price_display_mode = os.getenv("PRICE_DISPLAY_MODE", "DUAL").upper()
+        self.fx = get_fx()
         
         if self.verbose_console:
             # Print startup diagnostics
@@ -41,6 +48,34 @@ class ConsoleReporter:
             test_line = f"[TEST] ConsoleReporter active (pid={os.getpid()})"
             self._console_print(test_line)
     
+    def _format_price_display(self, price_sol: float) -> str:
+        """Format price according to PRICE_DISPLAY_MODE.
+        
+        Args:
+            price_sol: Token price in SOL
+            
+        Returns:
+            Formatted price string
+        """
+        if self.price_display_mode == "SOL":
+            price_str = self.fx.format_sol_price(price_sol)
+            return f"{price_str} SOL"
+        
+        elif self.price_display_mode == "USD":
+            sol_usd_rate = self.fx.get_cached_rate()
+            price_usd = self.fx.convert_sol_to_usd(price_sol, sol_usd_rate)
+            price_str = self.fx.format_usd_price(price_usd)
+            return f"${price_str}"
+        
+        else:  # DUAL
+            sol_usd_rate = self.fx.get_cached_rate()
+            price_usd = self.fx.convert_sol_to_usd(price_sol, sol_usd_rate)
+            
+            price_sol_str = self.fx.format_sol_price(price_sol)
+            price_usd_str = self.fx.format_usd_price(price_usd)
+            
+            return f"{price_sol_str} SOL (~${price_usd_str})"
+    
     def on_sim_buy(
         self, 
         symbol: str, 
@@ -59,16 +94,33 @@ class ConsoleReporter:
         # Use raw symbol with emoji support
         safe_symbol = symbol if symbol else "UNKNOWN"
         
-        # Format price to show scientific notation for very small numbers
-        if price < 0.000001:
-            price_str = f"{price:.2e}"
+        # Format price according to PRICE_DISPLAY_MODE
+        price_display_str = self._format_price_display(price)
+        
+        # Format values based on display currency
+        if self.display_currency == "USD":
+            sol_usd_rate = self.fx.get_cached_rate()
+            value_before_display = self.fx.convert_sol_to_usd(value_before, sol_usd_rate)
+            value_after_display = self.fx.convert_sol_to_usd(value_after, sol_usd_rate)
+            delta_display = self.fx.convert_sol_to_usd(delta, sol_usd_rate)
+            realized_pnl_display = self.fx.convert_sol_to_usd(realized_pnl, sol_usd_rate)
+            
+            value_before_str = self.fx.format_usd_value(value_before_display)
+            value_after_str = self.fx.format_usd_value(value_after_display)
+            delta_str = self.fx.format_usd_value(delta_display)
+            realized_pnl_str = self.fx.format_usd_value(realized_pnl_display)
+            currency_suffix = " USD"
         else:
-            price_str = f"{price:.8f}"
+            value_before_str = f"{value_before:.4f}"
+            value_after_str = f"{value_after:.4f}"
+            delta_str = f"{delta:+.4f}"
+            realized_pnl_str = f"{realized_pnl:.4f}"
+            currency_suffix = ""
             
         line = (
-            f"[DRY] BUY {safe_symbol} qty={quantity:.4f} @ {price_str} | "
-            f"value: {value_before:.4f} -> {value_after:.4f} (d {delta:+.4f}) | "
-            f"realized_pnl_cum={realized_pnl:.4f} | mode={mode}"
+            f"[DRY] BUY {safe_symbol} qty={quantity:.4f} @ {price_display_str} | "
+            f"value: {value_before_str}{currency_suffix} -> {value_after_str}{currency_suffix} (d {delta_str}{currency_suffix}) | "
+            f"realized_pnl_cum={realized_pnl_str}{currency_suffix} | mode={mode}"
         )
         self._console_print(line)
     
@@ -90,16 +142,33 @@ class ConsoleReporter:
         # Use raw symbol with emoji support
         safe_symbol = symbol if symbol else "UNKNOWN"
         
-        # Format price to show scientific notation for very small numbers
-        if price < 0.000001:
-            price_str = f"{price:.2e}"
+        # Format price according to PRICE_DISPLAY_MODE
+        price_display_str = self._format_price_display(price)
+        
+        # Format values based on display currency
+        if self.display_currency == "USD":
+            sol_usd_rate = self.fx.get_cached_rate()
+            value_before_display = self.fx.convert_sol_to_usd(value_before, sol_usd_rate)
+            value_after_display = self.fx.convert_sol_to_usd(value_after, sol_usd_rate)
+            delta_display = self.fx.convert_sol_to_usd(delta, sol_usd_rate)
+            realized_pnl_display = self.fx.convert_sol_to_usd(realized_pnl, sol_usd_rate)
+            
+            value_before_str = self.fx.format_usd_value(value_before_display)
+            value_after_str = self.fx.format_usd_value(value_after_display)
+            delta_str = self.fx.format_usd_value(delta_display)
+            realized_pnl_str = self.fx.format_usd_value(realized_pnl_display)
+            currency_suffix = " USD"
         else:
-            price_str = f"{price:.8f}"
+            value_before_str = f"{value_before:.4f}"
+            value_after_str = f"{value_after:.4f}"
+            delta_str = f"{delta:+.4f}"
+            realized_pnl_str = f"{realized_pnl:.4f}"
+            currency_suffix = ""
             
         line = (
-            f"[DRY] SELL {safe_symbol} qty={quantity:.4f} @ {price_str} | "
-            f"value: {value_before:.4f} -> {value_after:.4f} (d {delta:+.4f}) | "
-            f"realized_pnl_cum={realized_pnl:.4f} | mode={mode}"
+            f"[DRY] SELL {safe_symbol} qty={quantity:.4f} @ {price_display_str} | "
+            f"value: {value_before_str}{currency_suffix} -> {value_after_str}{currency_suffix} (d {delta_str}{currency_suffix}) | "
+            f"realized_pnl_cum={realized_pnl_str}{currency_suffix} | mode={mode}"
         )
         self._console_print(line)
     
@@ -153,9 +222,23 @@ class ConsoleReporter:
         timestamp = datetime.utcnow().isoformat()
         num_positions = len(positions)
         
+        # Format values based on display currency
+        if self.display_currency == "USD":
+            sol_usd_rate = await self.fx.get_sol_usd()
+            total_value_display = self.fx.convert_sol_to_usd(total_value, sol_usd_rate)
+            realized_pnl_display = self.fx.convert_sol_to_usd(realized_pnl, sol_usd_rate)
+            
+            value_str = self.fx.format_usd_value(total_value_display)
+            pnl_str = self.fx.format_usd_value(realized_pnl_display)
+            currency_suffix = " USD"
+        else:
+            value_str = f"{total_value:.4f}"
+            pnl_str = f"{realized_pnl:.4f}"
+            currency_suffix = ""
+        
         line = (
-            f"[SNAPSHOT] t={timestamp} sol={sol_balance:.4f} value={total_value:.4f} "
-            f"realized_pnl={realized_pnl:.4f} positions={num_positions}"
+            f"[SNAPSHOT] t={timestamp} sol={sol_balance:.4f} value={value_str}{currency_suffix} "
+            f"realized_pnl={pnl_str}{currency_suffix} positions={num_positions}"
         )
         
         # Add positions summary if requested

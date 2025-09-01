@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional
 from solders.pubkey import Pubkey
 from utils.logger import get_logger
 from utils.asserts import assert_approx_equal, approx_equal
+from core.fx import get_fx
 from .ledger import TradeLedger
 from .valuer import TokenValuer, ValueMode
 
@@ -76,6 +77,10 @@ class PortfolioSimulator:
         
         # Debug flag
         self.debug_valuation = os.getenv("DEBUG_VALUATION", "false").lower() == "true"
+        
+        # Portfolio display currency configuration
+        self.display_currency = os.getenv("PORTFOLIO_DISPLAY_CCY", "SOL").upper()
+        self.fx = get_fx()
         
         # Lock for thread-safe position dictionary access
         self._positions_lock = asyncio.Lock()
@@ -253,7 +258,7 @@ class PortfolioSimulator:
             else:
                 cash_delta_for_log = None
                 
-            self._log_trade_summary(
+            await self._log_trade_summary(
                 action="BUY",
                 symbol=symbol,
                 quantity=tokens_received,
@@ -399,7 +404,7 @@ class PortfolioSimulator:
             else:
                 cash_delta_for_log = None
                 
-            self._log_trade_summary(
+            await self._log_trade_summary(
                 action="SELL",
                 symbol=symbol,
                 quantity=tokens_to_sell,
@@ -484,7 +489,7 @@ class PortfolioSimulator:
             "positions": {mint_str: pos.to_dict() for mint_str, pos in list(self.positions.items())},
         }
 
-    def _log_trade_summary(
+    async def _log_trade_summary(
         self,
         action: str,
         symbol: str,
@@ -497,36 +502,76 @@ class PortfolioSimulator:
         cash_delta: float = None
     ) -> None:
         """Log trade summary to console and files."""
+        # Get FX rate for display conversion
+        sol_usd_rate = await self.fx.get_sol_usd()
+        
         # Console summary line with dual deltas if available
         mode = self.valuer.mode.value
+        
+        if self.display_currency == "USD":
+            # Convert values to USD for display
+            value_before_display = self.fx.convert_sol_to_usd(value_before, sol_usd_rate)
+            value_after_display = self.fx.convert_sol_to_usd(value_after, sol_usd_rate)
+            delta_display = self.fx.convert_sol_to_usd(delta, sol_usd_rate)
+            realized_pnl_display = self.fx.convert_sol_to_usd(realized_pnl, sol_usd_rate)
+            cash_delta_display = self.fx.convert_sol_to_usd(cash_delta, sol_usd_rate) if cash_delta is not None else None
+            
+            # Format USD values
+            currency_suffix = " USD"
+            value_before_str = self.fx.format_usd_value(value_before_display)
+            value_after_str = self.fx.format_usd_value(value_after_display)
+            delta_str = self.fx.format_usd_value(delta_display)
+            realized_pnl_str = self.fx.format_usd_value(realized_pnl_display)
+        else:
+            # Use SOL values directly
+            value_before_display = value_before
+            value_after_display = value_after
+            delta_display = delta
+            realized_pnl_display = realized_pnl
+            cash_delta_display = cash_delta
+            
+            currency_suffix = ""
+            value_before_str = f"{value_before:.4f}"
+            value_after_str = f"{value_after:.4f}"
+            delta_str = f"{delta:+.4f}"
+            realized_pnl_str = f"{realized_pnl:.4f}"
+        
         if cash_delta is not None:
             # Debug mode: show both cash and value deltas
+            cash_delta_str = self.fx.format_usd_value(cash_delta_display) if self.display_currency == "USD" else f"{cash_delta:+.4f}"
             summary = (
                 f"[DRY] {action} {symbol} qty={quantity:.4f} @ {price:.6f} | "
-                f"Δcash={cash_delta:+.4f} Δvalue={delta:+.4f} | "
-                f"value: {value_before:.4f} -> {value_after:.4f} | "
-                f"realized_pnl_cum={realized_pnl:.4f} | mode={mode}"
+                f"Δcash={cash_delta_str}{currency_suffix} Δvalue={delta_str}{currency_suffix} | "
+                f"value: {value_before_str}{currency_suffix} -> {value_after_str}{currency_suffix} | "
+                f"realized_pnl_cum={realized_pnl_str}{currency_suffix} | mode={mode}"
             )
         else:
             # Normal mode: original format
             summary = (
                 f"[DRY] {action} {symbol} qty={quantity:.4f} @ {price:.6f} | "
-                f"value: {value_before:.4f} -> {value_after:.4f} (d {delta:+.4f}) | "
-                f"realized_pnl_cum={realized_pnl:.4f} | mode={mode}"
+                f"value: {value_before_str}{currency_suffix} -> {value_after_str}{currency_suffix} (d {delta_str}{currency_suffix}) | "
+                f"realized_pnl_cum={realized_pnl_str}{currency_suffix} | mode={mode}"
             )
         logger.info(summary)
         
-        # Log trade event to NDJSON
+        # Log trade event to NDJSON with both SOL and USD values
         event_data = {
             "action": action.lower(),
             "symbol": symbol,
             "quantity": quantity,
-            "price": price,
-            "portfolio_value_before": value_before,
-            "portfolio_value_after": value_after,
-            "delta": delta,
-            "realized_pnl_cumulative": realized_pnl,
+            "token_price_sol": price,
+            "token_price_usd": self.fx.convert_sol_to_usd(price, sol_usd_rate),
+            "portfolio_value_before_sol": value_before,
+            "portfolio_value_after_sol": value_after,
+            "delta_sol": delta,
+            "realized_pnl_cumulative_sol": realized_pnl,
+            "portfolio_value_before_usd": self.fx.convert_sol_to_usd(value_before, sol_usd_rate),
+            "portfolio_value_after_usd": self.fx.convert_sol_to_usd(value_after, sol_usd_rate),
+            "delta_usd": self.fx.convert_sol_to_usd(delta, sol_usd_rate),
+            "realized_pnl_cumulative_usd": self.fx.convert_sol_to_usd(realized_pnl, sol_usd_rate),
             "sol_balance": self.sol_balance,
+            "sol_usd_rate": sol_usd_rate,
+            "display_ccy": self.display_currency,
             "value_mode": mode,
         }
         self.ledger.log_trade_event(event_data)
@@ -536,10 +581,14 @@ class PortfolioSimulator:
             "timestamp": datetime.utcnow().isoformat(),
             "action": action.lower(),
             "symbol": symbol,
-            "portfolio_value": value_after,
+            "portfolio_value_sol": value_after,
+            "portfolio_value_usd": self.fx.convert_sol_to_usd(value_after, sol_usd_rate),
             "sol_balance": self.sol_balance,
-            "realized_pnl": realized_pnl,
+            "realized_pnl_sol": realized_pnl,
+            "realized_pnl_usd": self.fx.convert_sol_to_usd(realized_pnl, sol_usd_rate),
             "num_positions": len(self.positions),
+            "sol_usd_rate": sol_usd_rate,
+            "display_ccy": self.display_currency,
             "value_mode": mode,
         }
         self.ledger.save_portfolio_snapshot(snapshot_data)

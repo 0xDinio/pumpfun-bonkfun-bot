@@ -8,7 +8,7 @@ rpc_endpoint: "${SOLANA_NODE_RPC_ENDPOINT}"
 wss_endpoint: "${SOLANA_NODE_WSS_ENDPOINT}"
 private_key: "${SOLANA_PRIVATE_KEY}"
 
-enabled: true # You can turn off the bot w/o removing its config
+enabled: false # You can turn off the bot w/o removing its config
 separate_process: true
 
 # Options: "pump_fun" (default), "lets_bonk"
@@ -23,7 +23,7 @@ geyser:
 # Trading parameters
 # Control trade execution: amount of SOL per trade and acceptable price deviation
 trade:
-  buy_amount: 0.075 # Amount of SOL to spend when buying (in SOL)
+  buy_amount: 0.1 # Amount of SOL to spend when buying (in SOL)
   buy_slippage: 0.2 # Maximum acceptable price deviation (0.2 = 20%)
   sell_slippage: 0.3
 
@@ -31,7 +31,7 @@ trade:
   exit_strategy: "tp_sl" # Options: "time_based", "tp_sl", "manual"
   take_profit_percentage: 0.25 # Take profit at 40% gain (0.4 = 40%)
   stop_loss_percentage: 0.15 # Stop loss at 40% loss (0.4 = 40%)
-  max_hold_time: 3 # Maximum hold time in seconds
+  max_hold_time: 1 # Maximum hold time in seconds
   price_check_interval: 0.1 # Check price every 2 seconds
 
   # EXTREME FAST mode configuration

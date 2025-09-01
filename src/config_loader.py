@@ -174,6 +174,33 @@ def resolve_env_vars(config: dict) -> None:
         "DEBUG_VALUATION": os.getenv("DEBUG_VALUATION", "false").lower() == "true",
     }
     
+    # Add portfolio display currency configuration
+    portfolio_display_ccy = os.getenv("PORTFOLIO_DISPLAY_CCY", "SOL").upper()
+    if portfolio_display_ccy not in ["SOL", "USD"]:
+        raise ValueError(f"PORTFOLIO_DISPLAY_CCY must be 'SOL' or 'USD', got '{portfolio_display_ccy}'")
+    
+    # Validate USD_FX_SOURCE
+    usd_fx_source = os.getenv("USD_FX_SOURCE", "FIXED").upper()
+    valid_fx_sources = ["FIXED", "JUPITER", "COINGECKO"]
+    if usd_fx_source not in valid_fx_sources:
+        raise ValueError(f"USD_FX_SOURCE must be one of {valid_fx_sources}, got '{usd_fx_source}'")
+    
+    # Validate PRICE_DISPLAY_MODE
+    price_display_mode = os.getenv("PRICE_DISPLAY_MODE", "DUAL").upper()
+    valid_price_modes = ["SOL", "USD", "DUAL"]
+    if price_display_mode not in valid_price_modes:
+        raise ValueError(f"PRICE_DISPLAY_MODE must be one of {valid_price_modes}, got '{price_display_mode}'")
+    
+    fx_env = {
+        "PORTFOLIO_DISPLAY_CCY": portfolio_display_ccy,
+        "USD_FX_SOURCE": usd_fx_source,
+        "FIXED_SOL_USD": float(os.getenv("FIXED_SOL_USD", "150.0")),
+        "FX_REFRESH_SECONDS": int(os.getenv("FX_REFRESH_SECONDS", "300")),  # 5 minutes
+        "FX_TIMEOUT_SECONDS": int(os.getenv("FX_TIMEOUT_SECONDS", "10")),   # 10 seconds
+        "FX_RETRIES": int(os.getenv("FX_RETRIES", "3")),                    # 3 attempts
+        "PRICE_DISPLAY_MODE": price_display_mode,
+    }
+    
     # Add console verbosity environment variables (safe defaults OFF)
     verbose_env = {
         "VERBOSE_CONSOLE": os.getenv("VERBOSE_CONSOLE", "false").lower() == "true",
@@ -182,6 +209,7 @@ def resolve_env_vars(config: dict) -> None:
         "VERBOSE_INCLUDE_POSITIONS": os.getenv("VERBOSE_INCLUDE_POSITIONS", "false").lower() == "true",
     }
     config.update(dry_run_env)
+    config.update(fx_env)
     config.update(verbose_env)
     
     # Merge skip keywords from YAML and environment
